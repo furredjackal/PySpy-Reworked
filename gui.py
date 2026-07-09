@@ -293,10 +293,24 @@ class Frame(wx.Frame):
         icon = wx.Icon()
         icon.CopyFromBitmap(wx.Bitmap(config.ICON_FILE, wx.BITMAP_TYPE_ANY))
         self.SetIcon(icon)
+        self._applyFrameBg()
         self._applyTitleBarTheme()
         # Restore transparency
         alpha = self.options.Get("GuiAlpha", 250)
         self.SetTransparent(alpha)
+
+    def _applyFrameBg(self):
+        '''Paint the frame (and WebView) background to match the page so
+        no light border shows around the embedded browser.'''
+        if self.options.Get("DarkMode", True):
+            bg = wx.Colour(18, 18, 18)  # --bg dark (matches webui.py)
+        else:
+            bg = wx.Colour(245, 245, 247)  # --bg light
+        self.SetBackgroundColour(bg)
+        try:
+            self.web.SetBackgroundColour(bg)
+        except Exception:
+            pass
 
     def __do_layout(self):
         sizer_main = wx.BoxSizer(wx.VERTICAL)
@@ -334,6 +348,7 @@ class Frame(wx.Frame):
         self._js("window.setTheme(" + json.dumps(theme) + ")")
         self._js("window.setScale(" +
                  str(self.options.Get("FontScale", 1)) + ")")
+        self._applyFrameBg()
         self._applyTitleBarTheme()
 
     def _applyTitleBarTheme(self):
