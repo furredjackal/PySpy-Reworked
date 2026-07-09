@@ -63,8 +63,7 @@ body {
 #appbar {
   flex: 0 0 auto;
   height: 52px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
+  background: var(--bg);
   display: flex;
   align-items: center;
   padding: 0 12px 0 6px;
@@ -209,8 +208,7 @@ tr.hl3 td { color: var(--pink); }
 #bottombar {
   flex: 0 0 auto;
   height: 40px;
-  background: var(--surface);
-  box-shadow: 0 -1px 3px rgba(0,0,0,.25);
+  background: var(--bg);
   display: flex;
   align-items: center;
   gap: 14px;

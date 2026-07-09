@@ -341,13 +341,35 @@ class Frame(wx.Frame):
         (Windows 10/11 immersive dark mode).'''
         if os.name != "nt":
             return
+        dark = self.options.Get("DarkMode", True)
         try:
             import ctypes
-            value = ctypes.c_int(1 if self.options.Get("DarkMode", True) else 0)
+            value = ctypes.c_int(1 if dark else 0)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
                 int(self.GetHandle()), 20, ctypes.byref(value),
                 ctypes.sizeof(value)
                 )
+        except Exception:
+            pass
+        self._enableDarkMenus(dark)
+
+    def _enableDarkMenus(self, dark):
+        '''Theme the native popup and context menus to match the app,
+        using the Windows uxtheme "preferred app mode" API (Win 10 1809+).'''
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            uxtheme = ctypes.WinDLL("uxtheme")
+            # Ordinal 135: SetPreferredAppMode (0=Default,1=AllowDark,
+            # 2=ForceDark,3=ForceLight). Ordinal 136: FlushMenuThemes.
+            set_mode = uxtheme[135]
+            set_mode.argtypes = [ctypes.c_int]
+            set_mode.restype = ctypes.c_int
+            flush = uxtheme[136]
+            flush.restype = None
+            set_mode(2 if dark else 3)
+            flush()
         except Exception:
             pass
 
