@@ -18,6 +18,7 @@ import config
 import db
 
 import aboutdialog
+import chatwatch
 import highlightdialog
 import ignoredialog
 import sortarray
@@ -74,7 +75,11 @@ class Frame(wx.Frame):
             [21, "Last Covert Cyno", wx.ALIGN_RIGHT, 100, True, True, "&Last Covert Cyno Ship Loss\tCTRL+ALT+<", 21],
             [22, "Last Regular Cyno", wx.ALIGN_RIGHT, 110, True, True, "&Last Regular Cyno Ship Loss\tCTRL+ALT+>", 22],
             [23, "Abyssal Losses", wx.ALIGN_RIGHT, 100, True, False, "&Abyssal Losses\tCTRL+ALT+Y", 23],
-            [24, "", None, 1, False, True, ""],  # Need for _stretchLastCol()
+            [24, "Danger", wx.ALIGN_RIGHT, 55, True, True, "&Danger Rating\tCTRL+ALT+D", 24],
+            [25, "Gang", wx.ALIGN_RIGHT, 50, True, False, "&Gang Ratio\tCTRL+ALT+G", 25],
+            [26, "Top Ship", wx.ALIGN_LEFT, 90, True, True, "&Top Ship (recent)\tCTRL+ALT+T", 26],
+            [27, "Active (ET)", wx.ALIGN_RIGHT, 70, True, True, "Active Ho&urs (EVE Time)\tCTRL+ALT+U", 27],
+            [28, "", None, 1, False, True, ""],  # Need for _stretchLastCol()
             )
 
         # Define the menu bar and menu items
@@ -211,6 +216,26 @@ class Frame(wx.Frame):
 
         self.opt_menu.AppendSeparator()
 
+        # Automatic intel: chat log watching and live kill feed
+        self.chat_watch = self.opt_menu.AppendCheckItem(
+            wx.ID_ANY, '&Watch EVE Chat Logs (Intel + Location)'
+            )
+        self.chat_watch.Check(self.options.Get("ChatWatch", False))
+        self.opt_menu.Bind(wx.EVT_MENU, self._toggleChatWatch, self.chat_watch)
+
+        self.set_intel = self.opt_menu.Append(
+            wx.ID_ANY, 'Set &Intel Channels...'
+            )
+        self.opt_menu.Bind(wx.EVT_MENU, self._setIntelChannels, self.set_intel)
+
+        self.kill_feed = self.opt_menu.AppendCheckItem(
+            wx.ID_ANY, '&Live Kill Feed Alerts'
+            )
+        self.kill_feed.Check(self.options.Get("KillFeed", False))
+        self.opt_menu.Bind(wx.EVT_MENU, self._toggleKillFeed, self.kill_feed)
+
+        self.opt_menu.AppendSeparator()
+
         self.clear_cache = self.opt_menu.Append(wx.ID_ANY, '&Clear Character Cache')
         self.opt_menu.Bind(wx.EVT_MENU, self.clear_character_cache, self.clear_cache)
         # self.file_about = self.file_menu.Append(wx.ID_ANY, '&About\tCTRL+A')
@@ -236,6 +261,16 @@ class Frame(wx.Frame):
             style=wx.ALIGN_LEFT | wx.ST_ELLIPSIZE_END
             )
         self.status_label.SetName("Status_Bar")
+
+        # The summary label shows a fleet composition rollup above the grid.
+        self.summary_label = wx.StaticText(
+            self,
+            wx.ID_ANY,
+            "",
+            style=wx.ALIGN_LEFT | wx.ST_ELLIPSIZE_END
+            )
+        self.summary_label.SetName("Fleet_Summary")
+        self.summary_label.Hide()
 
         # First set default properties, then restore persistence if any
         self.__set_properties()
@@ -305,6 +340,7 @@ class Frame(wx.Frame):
         self.grid.SetLabelBackgroundColour(self.bg_colour)
         self.grid.SetLabelTextColour(self.lbl_colour)
         self.status_label.SetForegroundColour(self.lbl_colour)
+        self.summary_label.SetForegroundColour(self.lbl_colour)
 
         # Do not reset window size etc. if only changing colour scheme.
         if dark_toggle:
@@ -352,12 +388,13 @@ class Frame(wx.Frame):
         '''
         sizer_main = wx.BoxSizer(wx.VERTICAL)
         sizer_bottom = wx.BoxSizer(wx.HORIZONTAL)
+        sizer_main.Add(self.summary_label, 0, wx.ALL | wx.EXPAND, 3)
         sizer_main.Add(self.grid, 1, wx.EXPAND, 0)
         sizer_bottom.Add(self.status_label, 1, wx.ALIGN_CENTER_VERTICAL, 0)
         static_line = wx.StaticLine(self, wx.ID_ANY, style=wx.LI_VERTICAL)
         sizer_bottom.Add(static_line, 0, wx.EXPAND, 0)
-        sizer_bottom.Add(self.alpha_slider, 0, wx.ALIGN_RIGHT, 0)
-        sizer_main.Add(sizer_bottom, 0, wx.ALIGN_BOTTOM | wx.ALL | wx.EXPAND, 1)
+        sizer_bottom.Add(self.alpha_slider, 0, wx.ALIGN_CENTER_VERTICAL, 0)
+        sizer_main.Add(sizer_bottom, 0, wx.ALL | wx.EXPAND, 1)
         self.SetSizer(sizer_main)
         self.Layout()
         self._restoreColWidth()
@@ -501,8 +538,12 @@ class Frame(wx.Frame):
         :param `duration`: Time in seconds taken to query all relevant
         databases for each character.
         '''
-        # If updateList() gets called before outlist has been provided, do nothing
-        if outlist is None:
+        # If updateList() gets called before outlist has been provided, do
+        # nothing. outlist can also be False (stored default) or empty.
+        if not outlist:
+            return
+        # Ignore outlists persisted by older PySpy versions with fewer columns
+        if len(outlist[0]) < 28:
             return
         # Clean up grid
         if self.grid.GetNumberRows() > 0:
@@ -519,6 +560,10 @@ class Frame(wx.Frame):
         hl_cyno_prob = config.CYNO_HL_PERCENTAGE
         ignore_count = 0
         rowidx = 0
+        # Fleet rollup accumulators (non-ignored characters only)
+        rollup_affil = {}
+        rollup_cyno = 0
+        rollup_blops = 0
         for r in outlist:
 
             ignore = False
@@ -593,6 +638,14 @@ class Frame(wx.Frame):
                 normal_ship = r[22]
                 abyssal_losses = r[23] if int(r[23]) >0 else "-"
 
+            # Enriched zKillboard statistics, "n.a." unless available
+            danger = gang = top_ship = active_tz = "n.a."
+            if r[24] is not None:
+                danger = "{}%".format(int(r[24])) if int(r[24]) > 0 else "-"
+                gang = "{}%".format(int(r[25])) if int(r[25]) > 0 else "-"
+                top_ship = r[26] if r[26] != "-" else "-"
+                active_tz = r[27] if r[27] else "-"
+
             out = [
                 id,
                 "-",
@@ -617,8 +670,22 @@ class Frame(wx.Frame):
                 normal_prob,
                 covert_ship,
                 normal_ship,
-                abyssal_losses
+                abyssal_losses,
+                danger,
+                gang,
+                top_ship,
+                active_tz
                 ]
+
+            # Accumulate fleet rollup for characters that are not ignored
+            if not ignore:
+                affil = r[6] if r[6] is not None else (
+                    r[4] if r[4] is not None else "No affiliation")
+                rollup_affil[affil] = rollup_affil.get(affil, 0) + 1
+                if cov_prob_float >= hl_cyno_prob or norm_prob_float >= hl_cyno_prob:
+                    rollup_cyno += 1
+                if r[9] is not None and r[11] > 0:
+                    rollup_blops += 1
 
             # Check if character belongs to a faction that should be ignored
             if faction_id != 0:
@@ -640,7 +707,9 @@ class Frame(wx.Frame):
             for value in out:
                 color = False
                 self.grid.SetCellValue(rowidx, colidx, str(value))
-                self.grid.SetCellAlignment(self.columns[colidx][2], rowidx, colidx)
+                self.grid.SetCellAlignment(
+                    rowidx, colidx, self.columns[colidx][2], wx.ALIGN_CENTRE
+                    )
                 if hl_blops and r[9] is not None and r[11] > 0:  # Highlight BLOPS chars
                     self.grid.SetCellTextColour(rowidx, colidx, self.hl1_colour)
                     color = True
@@ -676,11 +745,95 @@ class Frame(wx.Frame):
                 " to zKillboard."
                 )
 
+        self._updateSummary(
+            len(outlist) - ignore_count, rollup_affil, rollup_cyno, rollup_blops
+            )
+
+    def _updateSummary(self, pilot_count, affiliations, cyno_count, blops_count):
+        '''
+        Updates the fleet rollup label above the grid, summarising the
+        analysed characters: pilot count, largest affiliations and the
+        number of cyno-risk and BLOPS-active pilots.
+        '''
+        if pilot_count < 1:
+            self.summary_label.Hide()
+            self.Layout()
+            return
+        top_affils = sorted(
+            affiliations.items(), key=lambda kv: kv[1], reverse=True
+            )
+        segments = [
+            "{:,} pilot{}".format(pilot_count, "s" if pilot_count != 1 else "")
+            ]
+        if top_affils:
+            affil_text = ",  ".join(
+                "{} {}".format(name, count) for name, count in top_affils[:3]
+                )
+            remainder = len(top_affils) - 3
+            if remainder > 0:
+                affil_text += "  (+{} more)".format(remainder)
+            segments.append(affil_text)
+        if cyno_count > 0:
+            segments.append("Cyno risk: " + str(cyno_count))
+        if blops_count > 0:
+            segments.append("BLOPS-active: " + str(blops_count))
+        self.summary_label.SetLabel("   |   ".join(segments))
+        self.summary_label.Show()
+        self.Layout()
+
     def updateStatusbar(self, msg):
         '''Gets called by push_status() in statusmsg.py.'''
-        if isinstance(msg, str):
-            self.status_label.SetLabel(msg)
-            self.Layout()
+        try:
+            if isinstance(msg, str):
+                self.status_label.SetLabel(msg)
+                self.Layout()
+        except RuntimeError:
+            pass  # Widget already destroyed during shutdown
+
+    def updateLocation(self, system_name):
+        '''
+        Shows the player's current solar system (tracked from the EVE
+        Local chat log by chatwatch.py) in the window title.
+        '''
+        try:
+            self.SetTitle(config.GUI_TITLE + "  |  " + str(system_name))
+        except RuntimeError:
+            pass  # Frame already destroyed during shutdown
+
+    def _toggleChatWatch(self, event=None):
+        checked = self.chat_watch.IsChecked()
+        self.options.Set("ChatWatch", checked)
+        if checked:
+            if chatwatch.find_chatlog_dir() is None:
+                wx.MessageBox(
+                    'No EVE chat logs found. Please enable "Log Chat to '
+                    'File" in the EVE client settings (Settings > Chat) '
+                    'and restart the EVE client.\n\nPySpy will start '
+                    'watching automatically once logs appear.',
+                    'EVE Chat Logs Not Found',
+                    wx.OK | wx.ICON_INFORMATION
+                    )
+            elif not self.options.Get("IntelChannels", ""):
+                self._setIntelChannels()
+
+    def _setIntelChannels(self, event=None):
+        '''
+        Asks the user for a comma-separated list of intel channel
+        names whose chat logs should be watched for pilot names.
+        '''
+        dlg = wx.TextEntryDialog(
+            self,
+            "Enter the names of the intel channels to watch,\n"
+            "separated by commas (channel names as shown in EVE):",
+            "Intel Channels",
+            self.options.Get("IntelChannels", "")
+            )
+        if dlg.ShowModal() == wx.ID_OK:
+            self.options.Set("IntelChannels", dlg.GetValue())
+        dlg.Destroy()
+
+    def _toggleKillFeed(self, event=None):
+        self.options.Set("KillFeed", self.kill_feed.IsChecked())
 
     def _goToZKill(self, event):
         rowidx = event.GetRow()

@@ -25,16 +25,29 @@ def showAboutBox(parent, event=None):
     # __main__.app.PySpy.ToggleWindowStyle(wx.STAY_ON_TOP)
 
     description = """
-    PySpy is an EVE Online character intel tool
-    using CCP's ESI API and a daily updated proprietary
-    database containing key statistics on approximately
-    2.4 million pilots.
+    PySpy [Reworked] is an EVE Online character intel tool
+    using CCP's ESI API, zKillboard's API and full-history
+    killboard statistics served by the community-run
+    PySpy-backend (with automatic local fallback).
 
-    If you enjoy PySpy and want to show your appreciation
-    to its author, you are welcome to send an ISK donation
-    in-game to White Russsian (with 3 "s").
+    This edition revives the original, no longer maintained
+    PySpy and expands it with asynchronous scanning, threat
+    ratings, fleet rollups, chat log intel, location tracking
+    and live killmail alerts.
 
-    Thank you."""
+    Standing on the shoulders of:
+
+    White Russsian - author of the original PySpy (2018).
+    If you enjoy PySpy, ISK donations in-game to
+    White Russsian (with 3 "s") honour the original work.
+
+    jhmartin (Justin Martin) - resurrected the project and
+    rebuilt & hosts the killboard statistics backend from
+    the complete killmail archive since 2007.
+    https://github.com/jhmartin/PySpy-backend
+
+    furredjackal - the [Reworked] edition: repairs,
+    modernisation and the expanded capabilities above."""
 
     try:
         with open(config.resource_path('LICENSE.txt'), 'r') as lic_file:
@@ -45,11 +58,17 @@ def showAboutBox(parent, event=None):
     info = wx.adv.AboutDialogInfo()
 
     info.SetIcon(wx.Icon(config.ABOUT_ICON, wx.BITMAP_TYPE_PNG))
-    info.SetName("PySpy")
+    info.SetName("PySpy [Reworked]")
     info.SetVersion(config.CURRENT_VER)
     info.SetDescription(description)
-    info.SetCopyright('(C) 2018 White Russsian')
+    info.SetCopyright(
+        '(C) 2018 White Russsian (original) - '
+        '(C) 2026 furredjackal (Reworked edition)'
+        )
     info.SetWebSite('https://github.com/Eve-PySpy/PySpy')
+    info.AddDeveloper('White Russsian - original PySpy')
+    info.AddDeveloper('jhmartin - resurrected fork & community stats backend')
+    info.AddDeveloper('furredjackal - [Reworked] edition & expanded capabilities')
     info.SetLicence(license)
 
     wx.adv.AboutBox(info)

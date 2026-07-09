@@ -48,3 +48,6 @@ venv/
 
 *.pdf
 *.db*
+
+# Visual Studio
+.vs/

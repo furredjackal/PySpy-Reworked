@@ -46,6 +46,9 @@ class ReportStats(threading.Thread):
         self._gui_alpha = config.OPTIONS_OBJECT.Get("GuiAlpha", 250)
 
     def run(self):
+        # The PySpy statistics server (pyspy.pythonanywhere.com) no
+        # longer exists, so usage statistics are no longer reported.
+        return
         url = "http://pyspy.pythonanywhere.com/add_record/"
         headers = {
             "Accept-Encoding": "gzip",

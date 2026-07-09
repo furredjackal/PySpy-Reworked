@@ -9,14 +9,12 @@ zKIllboard's API, to be stored in a temporary in-memory SQLite3 database.
 # **********************************************************************
 import logging
 import json
-import threading
-import queue
-import time
 import datetime
 
 import apis
 import config
 import db
+import fetch
 import statusmsg
 # cSpell Checker - Correct Words****************************************
 # // cSpell:words affil, zkill, blops, qsize, numid, russsian, ccp's
@@ -26,85 +24,86 @@ Logger = logging.getLogger(__name__)
 # Example call: Logger.info("Something badhappened", exc_info=True) ****
 
 
+# All per-character columns retrieved from zKillboard, in the order
+# used by the update and cache queries in main() below. Must match the
+# record keys produced by fetch.characters().
+ZKILL_COLUMNS = (
+    "kills", "blops_kills", "hic_losses", "week_kills", "losses",
+    "solo_ratio", "sec_status", "danger", "gang_ratio", "top_ship",
+    "prime_tz", "last_loss_date", "last_kill_date", "avg_attackers",
+    "covert_prob", "normal_prob", "last_cov_ship", "last_norm_ship",
+    "abyssal_losses"
+    )
+
+
 def main(char_names, conn_mem, cur_mem, conn_dsk, cur_dsk):
     chars_found = get_char_ids(conn_mem, cur_mem, char_names)
-    if chars_found > 0:
-        # Run Pyspy remote database query in seprate thread
-        tp = threading.Thread(
-            target=get_character_intel(conn_mem, cur_mem),
-            daemon=True
-            )
-        tp.start()
+    if chars_found == 0:
+        return
 
-        # Run zKill query in seprate thread
-        char_ids_mem = cur_mem.execute(
-            "SELECT char_id, last_update FROM characters ORDER BY char_name"
-            ).fetchall()
+    char_ids_mem = cur_mem.execute(
+        "SELECT char_id, char_name FROM characters ORDER BY char_name"
+        ).fetchall()
 
-        cache_max_age = datetime.datetime.now() - datetime.timedelta(seconds=config.CACHE_TIME)
+    cache_max_age = datetime.datetime.now() - datetime.timedelta(seconds=config.CACHE_TIME)
+    char_ids_dsk = cur_dsk.execute(
+        "SELECT char_id FROM characters WHERE last_update > ?", (cache_max_age,)
+        ).fetchall()
 
-        char_ids_dsk = cur_dsk.execute(
-            "SELECT char_id, last_update FROM characters WHERE last_update > ? ORDER BY char_name", (cache_max_age,)
-            ).fetchall()
+    ids_mem = set(r[0] for r in char_ids_mem)
+    ids_dsk = set(r[0] for r in char_ids_dsk)
 
-        char_ids_mem_d = dict(char_ids_mem)
-        char_ids_dsk_d = dict(char_ids_dsk)
+    cache_hits = ids_mem & ids_dsk # Intersection of what we want and what we already have
+    cache_miss = ids_mem - cache_hits
 
-        ids_mem = set(char_ids_mem_d.keys())
-        ids_dsk = set(char_ids_dsk_d.keys())
+    Logger.debug("Cache Hits - {}".format(len(cache_hits)))
+    Logger.debug("Cache Miss - {}".format(len(cache_miss)))
 
-        cache_hits = ids_mem & ids_dsk # Intersection of what we want and what we already have
-        cache_miss = ids_mem - cache_hits
+    get_char_affiliations(conn_mem, cur_mem)
+    get_affil_names(conn_mem, cur_mem)
 
-        Logger.debug("Cache Hits - {}".format(len(cache_hits)))
-        Logger.debug("Cache Miss - {}".format(len(cache_miss)))
-
-        zkill_req =  [r for r in char_ids_mem if r[0] in cache_miss]
-
-        q_main = queue.Queue()
-        tz = zKillStats(zkill_req, q_main)
-        tz.start()
-
-        get_char_affiliations(conn_mem, cur_mem)
-        get_affil_names(conn_mem, cur_mem)
-
-        # Join zKill thread
-        tz.join()
-        update_datetime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        zkill_stats = q_main.get()
-        for entry in zkill_stats:
-            entry.insert(-1, update_datetime)
-        query_string = (
-            '''UPDATE characters SET kills=?, blops_kills=?, hic_losses=?,
-            week_kills=?, losses=?, solo_ratio=?, sec_status=?, last_update=?
-            WHERE char_id=?'''
-            )
-
-        cache_stats = []
-        for char_id in cache_hits:
-            # kills, blops_kills, hic_losses, week_kills, losses, solo_ratio, sec_status, id
-            cache_query = '''SELECT kills, blops_kills, hic_losses, week_kills, losses, solo_ratio,
-             sec_status, last_update, char_id FROM characters WHERE char_id = ?'''
-            stat = tuple(cur_dsk.execute(cache_query, (char_id,)).fetchone()) #SHOULD ONLY BE ONE ENTRY!!!
-            cache_stats.append(stat)
-
-        cache_char_query_string = (
-            '''INSERT OR REPLACE INTO characters (char_id, char_name) VALUES (?, ?)'''
+    update_query = (
+        "UPDATE characters SET " +
+        ", ".join(c + "=?" for c in ZKILL_COLUMNS) +
+        ", last_update=? WHERE char_id=?"
+        )
+    select_query = (
+        "SELECT " + ", ".join(ZKILL_COLUMNS) +
+        ", last_update, char_id FROM characters WHERE char_id = ?"
         )
 
-        db.write_many_to_db(conn_dsk, cur_dsk, cache_char_query_string, zkill_req)
-        db.write_many_to_db(conn_dsk, cur_dsk, query_string, zkill_stats)
+    if cache_miss:
+        statusmsg.push_status(
+            "Retrieving zKillboard data for " + str(len(cache_miss)) +
+            " character(s)..."
+            )
+        records = fetch.characters(sorted(cache_miss))
+        update_datetime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        fresh_rows = tuple(
+            tuple(rec[c] for c in ZKILL_COLUMNS) + (update_datetime, rec["char_id"])
+            for rec in records
+            )
+        db.write_many_to_db(conn_mem, cur_mem, update_query, fresh_rows)
+        # Persist to the disk cache, making sure the character rows exist
+        name_rows = [r for r in char_ids_mem if r[0] in cache_miss]
+        db.write_many_to_db(
+            conn_dsk, cur_dsk,
+            "INSERT OR REPLACE INTO characters (char_id, char_name) VALUES (?, ?)",
+            name_rows
+            )
+        db.write_many_to_db(conn_dsk, cur_dsk, update_query, fresh_rows)
 
-        db.write_many_to_db(conn_mem, cur_mem, query_string, zkill_stats)
-        db.write_many_to_db(conn_mem, cur_mem, query_string, cache_stats)
+    # Copy cached characters from the disk cache into the in-memory db
+    cached_rows = []
+    for char_id in cache_hits:
+        row = cur_dsk.execute(select_query, (char_id,)).fetchone()
+        if row is not None:
+            cached_rows.append(tuple(row))
+    db.write_many_to_db(conn_mem, cur_mem, update_query, cached_rows)
 
-        # Join Pyspy remote database thread
-        tp.join()
-        output = output_list(cur_mem)
-        conn_mem.close()
-        return output
-    else:
-        return
+    output = output_list(cur_mem)
+    conn_mem.close()
+    return output
 
 
 def get_char_ids(conn, cur, char_names):
@@ -185,85 +184,6 @@ def get_affil_names(conn, cur):
         db.write_many_to_db(conn, cur, query_string, corporations)
 
 
-class zKillStats(threading.Thread):
-
-    def __init__(self, char_ids, q_main):
-        super(zKillStats, self).__init__()
-        self.daemon = True
-        self._char_ids = char_ids
-        self._q_main = q_main
-
-    def run(self):
-        count = 0
-        max = config.ZKILL_CALLS
-        threads = []
-        q_sub = queue.Queue()
-        for id in self._char_ids:
-            t = apis.Query_zKill(id[0], q_sub)
-            threads.append(t)
-            t.start()
-            count += 1
-            time.sleep(config.ZKILL_DELAY)
-            if count >= max:
-                break
-        for t in threads:
-            t.join(5)
-        zkill_stats = []
-        while q_sub.qsize():
-            # Run through each queue item and prepare response list.
-            s = q_sub.get()
-            kills = str(s[0])
-            blops_kills = str(s[1])
-            hic_losses = str(s[2])
-            week_kills = str(s[3])
-            losses = str(s[4])
-            solo_ratio = str(s[5])
-            sec_status = str(s[6])
-            id = str(s[7])
-            zkill_stats.append([
-                kills, blops_kills, hic_losses, week_kills, losses, solo_ratio,
-                sec_status, id
-                ])
-        self._q_main.put(zkill_stats)
-        return
-
-
-def get_character_intel(conn, cur):
-    '''
-    Adds certain character killboard statistics derived from PySpy's
-    proprietary database to the local SQLite3 database.
-
-    :param `conn`: SQLite3 connection object.
-    :param `cur`: SQLite3 cursor object.
-    '''
-    char_ids = cur.execute("SELECT char_id FROM characters").fetchall()
-    char_intel = apis.post_proprietary_db(char_ids)
-    records = ()
-    for r in char_intel:
-        char_id = r["character_id"]
-        last_loss_date = r["last_loss_date"] if r["last_loss_date"] is not None else 0
-        last_kill_date = r["last_kill_date"] if r["last_kill_date"] is not None else 0
-        avg_attackers = r["avg_attackers"] if r["avg_attackers"] is not None else 0
-        covert_prob = r["covert_prob"] if r["covert_prob"] is not None else 0
-        normal_prob = r["normal_prob"] if r["normal_prob"] is not None else 0
-        last_cov_ship = r["last_cov_ship"] if r["last_cov_ship"] is not None else 0
-        last_norm_ship = r["last_norm_ship"] if r["last_norm_ship"] is not None else 0
-        abyssal_losses = r["abyssal_losses"] if r["abyssal_losses"] is not None else 0
-
-        records = records + ((
-            last_loss_date, last_kill_date, avg_attackers, covert_prob,
-            normal_prob, last_cov_ship, last_norm_ship, abyssal_losses, char_id
-            ), )
-
-    query_string = (
-        '''UPDATE characters SET last_loss_date=?, last_kill_date=?,
-        avg_attackers=?, covert_prob=?, normal_prob=?,
-        last_cov_ship=?, last_norm_ship=?, abyssal_losses=?
-        WHERE char_id=?'''
-        )
-    db.write_many_to_db(conn, cur, query_string, records)
-
-
 def output_list(cur):
     query_string = (
         '''SELECT
@@ -272,7 +192,8 @@ def output_list(cur):
         ch.hic_losses, ch.losses, ch.solo_ratio, ch.sec_status,
         ch.last_loss_date, ch.last_kill_date,
         ch.avg_attackers, ch.covert_prob, ch.normal_prob,
-        IFNULL(cs.name,'-'), IFNULL(ns.name,'-'), ch.abyssal_losses
+        IFNULL(cs.name,'-'), IFNULL(ns.name,'-'), ch.abyssal_losses,
+        ch.danger, ch.gang_ratio, IFNULL(ts.name,'-'), ch.prime_tz
         FROM characters AS ch
         LEFT JOIN alliances AS al ON ch.alliance_id = al.id
         LEFT JOIN corporations AS co ON ch.corp_id = co.id
@@ -281,6 +202,7 @@ def output_list(cur):
             AS ac ON ch.alliance_id = ac.alliance_id
         LEFT JOIN ships AS cs ON ch.last_cov_ship = cs.id
         LEFT JOIN ships AS ns ON ch.last_norm_ship = ns.id
+        LEFT JOIN ships AS ts ON ch.top_ship = ts.id
         ORDER BY ch.char_name'''
         )
     return cur.execute(query_string).fetchall()

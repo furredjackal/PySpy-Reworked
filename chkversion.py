@@ -29,15 +29,16 @@ def chk_github_update():
         # Get latest version available on GitHub
         GIT_URL = "https://api.github.com/repos/Eve-PySpy/PySpy/releases/latest"
         try:
-            # verify=False to avoid certificate errors. This is not critical.
-            latest_ver = requests.get(GIT_URL, verify=False).json()["tag_name"]
+            latest_ver = requests.get(GIT_URL, timeout=10).json()["tag_name"]
             Logger.info(
-                "You are running " + CURRENT_VER + " and " +
-                latest_ver + " is the latest version available on GitHub."
+                "You are running PySpy [Reworked] " + CURRENT_VER + ". The " +
+                "original (unmaintained) project's latest release on GitHub "
+                "is " + latest_ver + "."
                 )
             config.OPTIONS_OBJECT.Set("last_update_check", datetime.date.today())
-            if latest_ver != CURRENT_VER:
-                wx.CallAfter(__main__.app.PySpy.updateAlert, latest_ver, CURRENT_VER)
+            # Update alert disabled: this reworked fork is ahead of the
+            # unmaintained upstream project, so alerting on a version
+            # mismatch would wrongly suggest "updating" to older code.
         except:
             Logger.info("Could not check GitHub for potential available updates.")
 

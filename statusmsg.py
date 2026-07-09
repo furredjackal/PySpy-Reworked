@@ -21,4 +21,10 @@ Logger = logging.getLogger(__name__)
 
 
 def push_status(msg):
-    wx.CallAfter(__main__.app.PySpy.updateStatusbar, msg)
+    # Background threads may push status while the GUI is shutting
+    # down - never let that take the thread (or the app) down.
+    try:
+        if wx.GetApp() is not None:
+            wx.CallAfter(__main__.app.PySpy.updateStatusbar, msg)
+    except Exception:
+        pass

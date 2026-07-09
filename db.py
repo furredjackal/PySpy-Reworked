@@ -24,7 +24,9 @@ def connect_memory_db():
 
     @returns: connection and cursor objects as conn and cur
     '''
-    conn = sqlite3.connect(":memory:")
+    # check_same_thread=False as get_character_intel() uses this
+    # connection from a worker thread while the main analysis continues.
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.isolation_level = None
     cur = conn.cursor()
     cur.execute("PRAGMA journal_mode = TRUNCATE")
@@ -59,8 +61,20 @@ def prepare_tables(conn, cur):
         solo_ratio NUMERIC, sec_status NUMERIC, last_loss_date INT,
         last_kill_date INT, avg_attackers NUMERIC, covert_prob NUMERIC,
         normal_prob NUMERIC, last_cov_ship INT, last_norm_ship INT,
-        abyssal_losses INT, last_update TEXT)'''
+        abyssal_losses INT, danger INT, gang_ratio INT, top_ship INT,
+        prime_tz TEXT, last_update TEXT)'''
         )
+    # Migrate databases created by older PySpy versions
+    existing_cols = [r[1] for r in cur.execute("PRAGMA table_info(characters)")]
+    new_cols = (
+        ("danger", "INT"), ("gang_ratio", "INT"),
+        ("top_ship", "INT"), ("prime_tz", "TEXT")
+        )
+    for col_name, col_type in new_cols:
+        if col_name not in existing_cols:
+            cur.execute(
+                "ALTER TABLE characters ADD COLUMN {} {}".format(col_name, col_type)
+                )
     cur.execute(
         '''CREATE TABLE IF NOT EXISTS corporations (id INT PRIMARY KEY, name TEXT)'''
         )
@@ -89,13 +103,19 @@ def prepare_ship_data(conn, cur):
     max_age = config.MAX_SHIP_DATA_AGE
     max_date = datetime.date.today() - datetime.timedelta(days=max_age)
     if ship_data_date == 0 or ship_data_date < max_date:
-        config.OPTIONS_OBJECT.Set("ship_data", apis.get_ship_data())
-        config.OPTIONS_OBJECT.Set("ship_data_date", datetime.date.today())
+        ship_data = apis.get_ship_data()
+        if isinstance(ship_data, list):
+            config.OPTIONS_OBJECT.Set("ship_data", ship_data)
+            config.OPTIONS_OBJECT.Set("ship_data_date", datetime.date.today())
+        else:
+            Logger.warning("Could not download ship data, using cached copy if available.")
     # Populate ships table with ids and names for all ships in game
-    cur.executemany(
-        '''INSERT OR REPLACE INTO ships (id, name) VALUES (?, ?)''',
-        config.OPTIONS_OBJECT.Get("ship_data", 0)
-        )
+    ship_data = config.OPTIONS_OBJECT.Get("ship_data", 0)
+    if isinstance(ship_data, list):
+        cur.executemany(
+            '''INSERT OR REPLACE INTO ships (id, name) VALUES (?, ?)''',
+            ship_data
+            )
     conn.commit()
 
 
