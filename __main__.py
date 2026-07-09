@@ -95,7 +95,6 @@ def analyze_chars(char_names, quiet=False):
             outlist = analyze.main(char_names, conn_mem, cur_mem, conn_dsk, cur_dsk)
             duration = round(time.time() - start_time, 1)
             if outlist is not None:
-                safe_call_after(app.PySpy.grid.ClearGrid)
                 # Need to use keyword args as sortOutlist can also get called
                 # by event handler which would pass event object as first argument.
                 safe_call_after(

@@ -1,4 +1,4 @@
-wxPython>=4.0.3
+wxPython>=4.2
 requests>=2.19.1
 pyperclip>=1.6.2
 aiohttp>=3.9

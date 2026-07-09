@@ -2,133 +2,55 @@
 # MIT licensed
 # Copyright (c) 2018 White Russsian
 # Github: <https://github.com/Eve-PySpy/PySpy>**********************
-'''Simple wxpython GUI with 1 frame, using persistent properties.'''
+'''Material Design GUI for PySpy. The results are rendered as HTML/CSS
+inside an embedded WebView2 (Edge) browser control (see webui.py); all
+scanning, caching and intel logic remains in Python. Menus and dialogs
+are native wx for reliability.'''
 # **********************************************************************
 import datetime
+import json
 import logging
 import os
 import webbrowser
 
 import wx
-import wx.grid as WXG
+import wx.html2
 import wx.lib.agw.persist as pm
 
 import config
-
 import db
 
 import aboutdialog
 import chatwatch
 import highlightdialog
 import ignoredialog
-import portraits
-import sortarray
 import statusmsg
+import webui
 # cSpell Checker - Correct Words****************************************
-# // cSpell:words wrusssian, wxpython, HRULES, VRULES, ELLIPSIZE, zkill,
-# // cSpell:words blops, Unregister, russsian, chkversion, posix,
-# // cSpell:words Gallente, Minmatar, Amarr, Caldari, ontop, hics, npsi
+# // cSpell:words wrusssian, wxpython, zkill, blops, russsian, chkversion
+# // cSpell:words posix, Gallente, Minmatar, Amarr, Caldari, ontop, hics
+# // cSpell:words npsi, webui, evetech
 # **********************************************************************
 Logger = logging.getLogger(__name__)
 # Example call: Logger.info("Something badhappened", exc_info=True) ****
 
-
-class CharacterCellRenderer(wx.grid.GridCellRenderer):
-    '''
-    Draws the character's portrait (from CCP's image server, cached by
-    portraits.py) next to the character name.
-    '''
-    def __init__(self, frame):
-        super(CharacterCellRenderer, self).__init__()
-        self._frame = frame
-
-    def Draw(self, grid, attr, dc, rect, row, col, isSelected):
-        bg = (
-            grid.GetSelectionBackground() if isSelected
-            else attr.GetBackgroundColour()
-            )
-        dc.SetBrush(wx.Brush(bg))
-        dc.SetPen(wx.Pen(bg))
-        dc.DrawRectangle(rect)
-        dc.SetClippingRegion(rect)
-        x = rect.x + 6
-        char_ids = self._frame.row_char_ids
-        bmp = portraits.get(char_ids[row]) if row < len(char_ids) else None
-        if bmp is not None:
-            dc.DrawBitmap(
-                bmp, x, rect.y + (rect.height - bmp.GetHeight()) // 2, True
-                )
-        x += self._frame.portrait_px + 8
-        dc.SetFont(attr.GetFont())
-        dc.SetTextForeground(
-            grid.GetSelectionForeground() if isSelected
-            else attr.GetTextColour()
-            )
-        text = grid.GetCellValue(row, col)
-        th = dc.GetTextExtent(text).height
-        dc.DrawText(text, x, rect.y + (rect.height - th) // 2)
-        dc.DestroyClippingRegion()
-
-    def GetBestSize(self, grid, attr, dc, row, col):
-        dc.SetFont(attr.GetFont())
-        extent = dc.GetTextExtent(grid.GetCellValue(row, col))
-        return wx.Size(
-            extent.width + self._frame.portrait_px + 20,
-            max(extent.height + 4, self._frame.portrait_px + 6)
-            )
-
-    def Clone(self):
-        return CharacterCellRenderer(self._frame)
-
-
-class WarningChipRenderer(wx.grid.GridCellRenderer):
-    '''
-    Draws the warning flags (CYNO, BLOPS, HIC) as rounded,
-    colour-coded chips instead of plain text.
-    '''
-    def __init__(self, frame):
-        super(WarningChipRenderer, self).__init__()
-        self._frame = frame
-
-    def Draw(self, grid, attr, dc, rect, row, col, isSelected):
-        bg = (
-            grid.GetSelectionBackground() if isSelected
-            else attr.GetBackgroundColour()
-            )
-        dc.SetBrush(wx.Brush(bg))
-        dc.SetPen(wx.Pen(bg))
-        dc.DrawRectangle(rect)
-        text = grid.GetCellValue(row, col)
-        if text in ("", "-"):
-            return
-        dc.SetClippingRegion(rect)
-        font = attr.GetFont().Smaller().MakeBold()
-        dc.SetFont(font)
-        x = rect.x + 4
-        for token in [t.strip() for t in text.split("+") if t.strip()]:
-            colour = (
-                self._frame.hl2_colour if token == "CYNO"
-                else self._frame.hl1_colour
-                )
-            extent = dc.GetTextExtent(token)
-            chip_w = extent.width + 12
-            chip_h = extent.height + 4
-            chip_y = rect.y + (rect.height - chip_h) // 2
-            dc.SetBrush(wx.Brush(colour))
-            dc.SetPen(wx.Pen(colour))
-            dc.DrawRoundedRectangle(x, chip_y, chip_w, chip_h, chip_h // 2)
-            dc.SetTextForeground(self._frame.bg_colour)
-            dc.DrawText(token, x + 6, chip_y + 2)
-            x += chip_w + 4
-        dc.DestroyClippingRegion()
-
-    def GetBestSize(self, grid, attr, dc, row, col):
-        dc.SetFont(attr.GetFont())
-        extent = dc.GetTextExtent(grid.GetCellValue(row, col))
-        return wx.Size(extent.width + 30, extent.height + 8)
-
-    def Clone(self):
-        return WarningChipRenderer(self._frame)
+# Grid column index -> stable key used in the HTML/JS layer. Aligned
+# with self.columns and the `out` display array built in updateList().
+COL_KEYS = [
+    "id", "warning", "factionid", "name", "security", "corpid",
+    "corporation", "allianceid", "alliance", "faction", "kills", "losses",
+    "lastwk", "solo", "blops", "hics", "lastloss", "lastkill", "avgatt",
+    "covcyno", "regcyno", "lastcov", "lastreg", "abyssal", "danger",
+    "gang", "topship", "active"
+    ]
+# Grid column indices that are internal helpers, never shown as columns.
+HIDDEN_COLS = {0, 2, 5, 7}
+# Keys whose values sort numerically in the table.
+NUMERIC_KEYS = {
+    "security", "kills", "losses", "lastwk", "solo", "blops", "hics",
+    "lastloss", "lastkill", "avgatt", "covcyno", "regcyno", "abyssal",
+    "danger", "gang"
+    }
 
 
 class Frame(wx.Frame):
@@ -137,14 +59,9 @@ class Frame(wx.Frame):
         # Persistent Options
         self.options = config.OPTIONS_OBJECT
 
-        kwds["style"] = kwds.get("style", 0) | wx.DEFAULT_FRAME_STYLE  # wx.RESIZE_BORDER
+        kwds["style"] = kwds.get("style", 0) | wx.DEFAULT_FRAME_STYLE
         wx.Frame.__init__(self, *args, **kwds)
         self.SetName("Main Window")
-
-        # Modern system font (Segoe UI on Windows) instead of the default
-        if os.name == "nt":
-            self.Font = wx.Font(wx.FontInfo(10).FaceName("Segoe UI"))
-        self.Font = self.Font.Scaled(self.options.Get("FontScale", 1))
 
         # Set stay on-top unless user deactivated it
         if self.options.Get("StayOnTop", True):
@@ -181,11 +98,9 @@ class Frame(wx.Frame):
             [25, "Gang", wx.ALIGN_RIGHT, 50, True, False, "&Gang Ratio\tCTRL+ALT+G", 25],
             [26, "Top Ship", wx.ALIGN_LEFT, 90, True, True, "&Top Ship (recent)\tCTRL+ALT+T", 26],
             [27, "Active (ET)", wx.ALIGN_RIGHT, 70, True, True, "Active Ho&urs (EVE Time)\tCTRL+ALT+U", 27],
-            [28, "", None, 1, False, True, ""],  # Need for _stretchLastCol()
             )
 
-        # All actions live in one popup menu behind the header's menu
-        # button - the native menu bar is gone for a cleaner look.
+        # ---- Menus (native wx, shown via the header's menu button) ----
         self.main_menu = wx.Menu()
 
         self.file_menu = wx.Menu()
@@ -265,46 +180,29 @@ class Frame(wx.Frame):
         self.view_menu.Bind(wx.EVT_MENU, self._toggleDarkMode, self.dark_mode)
         self.use_dm = self.dark_mode.IsChecked()
 
-
-        # Options Menubar
+        # Options Menu
         self.opt_menu = wx.Menu()
 
         self.review_ignore = self.opt_menu.Append(wx.ID_ANY, "&Review Ignored Entities\tCTRL+R")
-        self.opt_menu.Bind(
-            wx.EVT_MENU,
-            self._openIgnoreDialog,
-            self.review_ignore
-            )
+        self.opt_menu.Bind(wx.EVT_MENU, self._openIgnoreDialog, self.review_ignore)
 
         self.review_highlight = self.opt_menu.Append(wx.ID_ANY, "&Review Highlighted Entities\tCTRL+H")
-        self.opt_menu.Bind(
-            wx.EVT_MENU,
-            self._openHightlightDialog,
-            self.review_highlight
-        )
+        self.opt_menu.Bind(wx.EVT_MENU, self._openHightlightDialog, self.review_highlight)
 
         self.opt_menu.AppendSeparator()
 
         self.ignore_all = self.opt_menu.Append(wx.ID_ANY, "&Set NPSI Ignore List\tCTRL+SHIFT+S")
-        self.opt_menu.Bind(
-            wx.EVT_MENU,
-            self._showNpsiDialog,
-            self.ignore_all
-            )
+        self.opt_menu.Bind(wx.EVT_MENU, self._showNpsiDialog, self.ignore_all)
 
         self.clear_ignore = self.opt_menu.Append(wx.ID_ANY, "&Clear NPSI Ignore List\tCTRL+SHIFT+C")
-        self.opt_menu.Bind(
-            wx.EVT_MENU,
-            self._clearNpsiList,
-            self.clear_ignore
-            )
+        self.opt_menu.Bind(wx.EVT_MENU, self._clearNpsiList, self.clear_ignore)
 
         self.opt_menu.AppendSeparator()
 
         # Toggle zKillboard linking mode
         self.zkill_mode = self.opt_menu.AppendCheckItem(
             wx.ID_ANY, '&zKillboard Advanced Linking\tCTRL+ALT+Z'
-        )
+            )
         self.zkill_mode.Check(self.options.Get("ZkillMode", False))
         self.opt_menu.Bind(wx.EVT_MENU, self._toggleZkillMode, self.zkill_mode)
         self.use_adv_zkill = self.zkill_mode.IsChecked()
@@ -318,9 +216,7 @@ class Frame(wx.Frame):
         self.chat_watch.Check(self.options.Get("ChatWatch", False))
         self.opt_menu.Bind(wx.EVT_MENU, self._toggleChatWatch, self.chat_watch)
 
-        self.set_intel = self.opt_menu.Append(
-            wx.ID_ANY, 'Set &Intel Channels...'
-            )
+        self.set_intel = self.opt_menu.Append(wx.ID_ANY, 'Set &Intel Channels...')
         self.opt_menu.Bind(wx.EVT_MENU, self._setIntelChannels, self.set_intel)
 
         self.kill_feed = self.opt_menu.AppendCheckItem(
@@ -333,10 +229,8 @@ class Frame(wx.Frame):
 
         self.clear_cache = self.opt_menu.Append(wx.ID_ANY, '&Clear Character Cache')
         self.opt_menu.Bind(wx.EVT_MENU, self.clear_character_cache, self.clear_cache)
-        # self.file_about = self.file_menu.Append(wx.ID_ANY, '&About\tCTRL+A')
-        # self.file_menu.Bind(wx.EVT_MENU, self._openAboutDialog, self.file_about)
 
-        # Assemble the popup menu
+        # Assemble the popup menu shown by the header's menu button
         self.main_menu.AppendSubMenu(self.file_menu, "PySpy")
         self.main_menu.AppendSubMenu(self.view_menu, "View")
         self.main_menu.AppendSubMenu(self.opt_menu, "Options")
@@ -355,663 +249,95 @@ class Frame(wx.Frame):
         self.Bind(wx.EVT_MENU, self._openIgnoreDialog, id=self.review_ignore.GetId())
         self.Bind(wx.EVT_MENU, self._openHightlightDialog, id=self.review_highlight.GetId())
 
-        # Custom header (replaces the native menu bar)
-        self.header = wx.Panel(self, wx.ID_ANY)
-        self.menu_btn = wx.Button(
-            self.header, wx.ID_ANY, "☰", style=wx.BORDER_NONE
+        # ---- WebView (the Material Design UI itself) ----
+        self._web_ready = False
+        self._pending_js = []
+        self._last_payload = None
+        self.web = wx.html2.WebView.New(
+            self, backend=wx.html2.WebViewBackendEdge
             )
-        self.menu_btn.SetMinSize((38, 30))
-        self.menu_btn.Bind(wx.EVT_BUTTON, self._showMainMenu)
-        self.app_label = wx.StaticText(self.header, wx.ID_ANY, "PYSPY")
-        self.location_label = wx.StaticText(self.header, wx.ID_ANY, "")
-        header_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        header_sizer.Add(self.menu_btn, 0, wx.ALIGN_CENTER_VERTICAL, 0)
-        header_sizer.AddSpacer(6)
-        header_sizer.Add(self.app_label, 0, wx.ALIGN_CENTER_VERTICAL, 0)
-        header_sizer.AddSpacer(14)
-        header_sizer.Add(self.location_label, 0, wx.ALIGN_CENTER_VERTICAL, 0)
-        header_sizer.AddStretchSpacer()
-        self.header.SetSizer(header_sizer)
-
-        # Portrait bitmaps per grid row, filled by updateList()
-        self.row_char_ids = []
-
-        # Set the grid object
-        self.grid = wx.grid.Grid(self, wx.ID_ANY)
-        self.grid.CreateGrid(0, 0)
-        self.grid.SetName("Output List")
-
-        # Allow to change window transparency using this slider.
-        self.alpha_slider = wx.Slider(self, wx.ID_ANY, 250, 50, 255)
-        self.alpha_slider.SetName("Transparency_Slider")
-        self.Bind(wx.EVT_SLIDER, self._setTransparency)
-
-        # The status label shows various info and error messages.
-        self.status_label = wx.StaticText(
-            self,
-            wx.ID_ANY,
-            "Please copy some EVE character names to clipboard...",
-            style=wx.ALIGN_LEFT | wx.ST_ELLIPSIZE_END
+        self.web.SetName("WebUI")
+        # Suppress the browser's own context menu / accelerators
+        try:
+            self.web.EnableContextMenu(False)
+            self.web.EnableAccessToDevTools(False)
+        except Exception:
+            pass
+        self.web.AddScriptMessageHandler("pyspy")
+        self.web.Bind(wx.html2.EVT_WEBVIEW_LOADED, self._onWebLoaded)
+        self.web.Bind(
+            wx.html2.EVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, self._onWebMessage
             )
-        self.status_label.SetName("Status_Bar")
+        self.web.SetPage(webui.PAGE, "")
 
-        # The summary label shows a fleet composition rollup above the grid.
-        self.summary_label = wx.StaticText(
-            self,
-            wx.ID_ANY,
-            "",
-            style=wx.ALIGN_LEFT | wx.ST_ELLIPSIZE_END
-            )
-        self.summary_label.SetName("Fleet_Summary")
-        self.summary_label.Hide()
-
-        # First set default properties, then restore persistence if any
+        # First set default window properties
         self.__set_properties()
 
-        # Set up Persistence Manager
+        # Set up Persistence Manager (window position / size)
         self._persistMgr = pm.PersistenceManager.Get()
         self._persistMgr.SetPersistenceFile(config.GUI_CFG_FILE)
         self._persistMgr.RegisterAndRestoreAll(self)
 
-        # Column resize to trigger last column stretch to fill blank canvas.
-        self.Bind(wx.grid.EVT_GRID_COL_SIZE, self._stretchLastCol, self.grid)
-
-        # Window resize to trigger last column stretch to fill blank canvas.
-        self.Bind(wx.EVT_SIZE, self._stretchLastCol, self)
-
         # Ensure that Persistence Manager saves window location on close
         self.Bind(wx.EVT_CLOSE, self.OnClose)
 
-        # Bind double click on list item to zKill link.
-        self.Bind(wx.grid.EVT_GRID_CELL_LEFT_DCLICK, self._goToZKill, self.grid)
-
-        # Bind right click on list item to ignore character.
-        self.Bind(wx.grid.EVT_GRID_CELL_RIGHT_CLICK, self._showContextMenu, self.grid)
-
-        # Bind left click on column label to sorting
-        self.Bind(wx.grid.EVT_GRID_COL_SORT, self.sortOutlist, self.grid)
-
-        # Set transparency based off restored slider
-        self._setTransparency()
         self.__do_layout()
 
-    def __set_properties(self, dark_toggle=None):
-        '''
-        Set the initial properties for the various widgets.
-
-        :param `dark_toggle`: Boolean indicating if only the properties
-        related to the colour scheme should be set or everything.
-        '''
-        # Colour Scheme Dictionaries
-        self.dark_dict = config.DARK_MODE
-        self.normal_dict = config.NORMAL_MODE
-
-        # Colour Scheme
-        scheme = (
-            self.dark_dict if self.options.Get("DarkMode", True)
-            else self.normal_dict
-            )
-        self.bg_colour = scheme["BG"]
-        self.bg2_colour = scheme["BG2"]
-        self.txt_colour = scheme["TXT"]
-        self.lne_colour = scheme["LNE"]
-        self.lbl_colour = scheme["LBL"]
-        self.hl1_colour = scheme["HL1"]
-        self.hl2_colour = scheme["HL2"]
-        self.hl3_colour = scheme["HL3"]
-        self.acc_colour = scheme["ACC"]
-        self.sel_colour = scheme["SEL"]
-
-        # Set default colors
-        self.SetBackgroundColour(self.bg_colour)
-        self.SetForegroundColour(self.txt_colour)
-        self.grid.SetDefaultCellBackgroundColour(self.bg_colour)
-        self.grid.SetDefaultCellTextColour(self.txt_colour)
-        self.grid.SetGridLineColour(self.lne_colour)
-        self.grid.SetLabelBackgroundColour(self.bg2_colour)
-        self.grid.SetLabelTextColour(self.lbl_colour)
-        self.grid.SetSelectionBackground(self.sel_colour)
-        self.grid.SetSelectionForeground(self.txt_colour)
-        self.status_label.SetForegroundColour(self.lbl_colour)
-        self.summary_label.SetForegroundColour(self.acc_colour)
-        self.header.SetBackgroundColour(self.bg2_colour)
-        self.menu_btn.SetBackgroundColour(self.bg2_colour)
-        self.menu_btn.SetForegroundColour(self.txt_colour)
-        self.app_label.SetForegroundColour(self.lbl_colour)
-        self.location_label.SetForegroundColour(self.acc_colour)
-        self._applyTitleBarTheme()
-        self.header.Refresh()
-
-        # Do not reset window size etc. if only changing colour scheme.
-        if dark_toggle:
-            return
-
+    # ==================================================================
+    #  Window setup
+    # ==================================================================
+    def __set_properties(self):
         self.SetTitle(config.GUI_TITLE)
-        self.SetSize((900, 420))
-        # Insert columns based on parameters provided in col_def
-
-        # self.grid.CreateGrid(0, 0)
-        if self.grid.GetNumberCols() < len(self.columns):
-            self.grid.AppendCols(len(self.columns))
-        # Modern typography and spacing
-        self.grid.SetDefaultCellFont(self.Font)
-        self.grid.SetLabelFont(self.Font.Bold())
-        self.summary_label.SetFont(self.Font.Bold())
-        self.app_label.SetFont(self.Font.Bold())
-        self.location_label.SetFont(self.Font.Bold())
-        self.menu_btn.SetFont(self.Font.Scaled(1.2))
-        self.grid.SetDefaultRowSize(
-            int(self.grid.GetDefaultRowSize() * 1.45), True
-            )
-        self.grid.SetColLabelSize(self.grid.GetDefaultRowSize() + 4)
-        # Rows are separated by zebra striping, not grid lines
-        self.grid.EnableGridLines(False)
-        # Portraits scale with the row height
-        self.portrait_px = self.grid.GetDefaultRowSize() - 6
-        portraits.set_display_size(self.portrait_px)
-        # Custom renderers: portraits next to names, warning chips
-        char_attr = wx.grid.GridCellAttr()
-        char_attr.SetRenderer(CharacterCellRenderer(self))
-        self.grid.SetColAttr(3, char_attr)
-        warn_attr = wx.grid.GridCellAttr()
-        warn_attr.SetRenderer(WarningChipRenderer(self))
-        self.grid.SetColAttr(1, warn_attr)
-        self.grid.SetRowLabelSize(0)
-        self.grid.EnableEditing(0)
-        self.grid.DisableCellEditControl()
-        self.grid.EnableDragRowSize(0)
-        self.grid.EnableDragGridSize(0)
-        self.grid.SetSelectionMode(wx.grid.Grid.SelectRows)
-        self.grid.SetColLabelAlignment(wx.ALIGN_CENTRE, wx.ALIGN_BOTTOM)
-        self.grid.ClipHorzGridLines(False)
-        # self.grid.ClipVertGridLines(False)
-        # Disable visual highlighting of selected cell to look more like listctrl
-        self.grid.SetCellHighlightPenWidth(0)
-        colidx = 0
-        for col in self.columns:
-            self.grid.SetColLabelValue(
-                col[0],  # Index
-                col[1],  # Heading
-                )
-            # self.grid.SetColSize(colidx, col[3])
-            colidx += 1
-        # Transparency slider
-        self.alpha_slider.SetMinSize((100, 20))
-        # Window icon
+        self.SetSize((940, 480))
+        self.SetMinSize((520, 260))
         icon = wx.Icon()
         icon.CopyFromBitmap(wx.Bitmap(config.ICON_FILE, wx.BITMAP_TYPE_ANY))
         self.SetIcon(icon)
+        self._applyTitleBarTheme()
+        # Restore transparency
+        alpha = self.options.Get("GuiAlpha", 250)
+        self.SetTransparent(alpha)
 
     def __do_layout(self):
-        '''
-        Assigns the various widgets to sizers and calls a number of helper
-        functions.
-        '''
         sizer_main = wx.BoxSizer(wx.VERTICAL)
-        sizer_bottom = wx.BoxSizer(wx.HORIZONTAL)
-        sizer_main.Add(self.header, 0, wx.EXPAND, 0)
-        sizer_main.Add(self.summary_label, 0, wx.ALL | wx.EXPAND, 3)
-        sizer_main.Add(self.grid, 1, wx.EXPAND, 0)
-        sizer_bottom.Add(self.status_label, 1, wx.ALIGN_CENTER_VERTICAL, 0)
-        static_line = wx.StaticLine(self, wx.ID_ANY, style=wx.LI_VERTICAL)
-        sizer_bottom.Add(static_line, 0, wx.EXPAND, 0)
-        sizer_bottom.Add(self.alpha_slider, 0, wx.ALIGN_CENTER_VERTICAL, 0)
-        sizer_main.Add(sizer_bottom, 0, wx.ALL | wx.EXPAND, 1)
+        sizer_main.Add(self.web, 1, wx.EXPAND, 0)
         self.SetSizer(sizer_main)
         self.Layout()
-        self._restoreColWidth()
-        self._stretchLastCol()
 
-    def _fontScaleMenu(self, lower, upper):
-        '''
-        Populates the font scale sub menu with scale percentages
-        based on input bounds.
+    # ==================================================================
+    #  WebView plumbing
+    # ==================================================================
+    def _onWebLoaded(self, event=None):
+        self._web_ready = True
+        self._applyTheme()
+        # Restore transparency slider position
+        self._js("document.getElementById('alpha').value = " +
+                 str(self.options.Get("GuiAlpha", 250)))
+        for script in self._pending_js:
+            self.web.RunScriptAsync(script)
+        self._pending_js = []
+        if self._last_payload is not None:
+            self._pushPayload(self._last_payload)
 
-        :param `lower`: The minimum scale represented as a decimal, e.g. 0.6
-
-        :param `upper`: The maximum scale represented as a decimal, e.g. 1.4
-        '''
-        for scale in range(lower, upper):
-            scale = scale / 10
-            self.font_sub.AppendRadioItem(wx.ID_ANY, "{:.0%}".format(scale))
-            self.font_sub.Bind(
-                wx.EVT_MENU,
-                lambda evt, scale=scale: self._setFontScale(scale, evt),
-                self.font_sub.MenuItems[-1]
-                )
-            if scale == self.options.Get("FontScale", 1):
-                self.font_sub.MenuItems[-1].Check(True)
-
-    def _setFontScale(self, scale, evt=None):
-        '''
-        Changes the font scaling and saves it in the pickle container.
-
-        :param `scale`: Float representing the font scale.
-        '''
-        self.Font = self.Font.Scaled(scale)
-        self.options.Set("FontScale", scale)
-
-    def _createShowColMenuItems(self):
-        '''
-        Populates the View menu with show column toggle menu items for
-        each column that is toggleable. It uses the information provided
-        in self.columns.
-        '''
-        # For each column, create show / hide menu items, if hideable
-        self.col_menu_items = [[] for i in self.columns]
-        for col in self.columns:
-            if not col[4]:  # Do not add menu item if column not hideable
-                continue
-            index = col[0]
-            options_key = "Show" + col[1]
-            menu_name = "Show " + col[6]
-            self.col_menu_items[index] = self.view_menu.AppendCheckItem(
-                wx.ID_ANY,
-                menu_name
-                )
-            # Column show / hide, depending on user settings, if any
-            checked = self.options.Get(
-                options_key,
-                self.columns[index][5]
-                )
-            self.col_menu_items[index].Check(
-                self.options.Get(options_key, checked)
-                )
-            # Bind new menu item to toggleColumn method
-            self.view_menu.Bind(
-                wx.EVT_MENU,
-                lambda evt, index=index: self._toggleColumn(index, evt),
-                self.col_menu_items[index]
-                )
-
-    def _toggleColumn(self, index, event=None):
-        '''
-        Depending on the respective menu item state, either reveals or
-        hides a column. If it hides a column, it first stores the old
-        column width in self.options to allow for subsequent restore.
-
-        :param `index`: Integer representing the index of the column
-        which is to shown / hidden.
-        '''
-        try:
-            checked = self.col_menu_items[index].IsChecked()
-        except:
-            checked = False
-        col_name = self.columns[index][1]
-        if checked:
-            default_width = self.columns[index][3]
-            col_width = self.options.Get(col_name, default_width)
-            if col_width > 0:
-                self.grid.SetColSize(index, col_width)
-            else:
-                self.grid.SetColSize(index, default_width)
+    def _js(self, script):
+        '''Run JS in the page, queuing until the page has loaded.'''
+        if self._web_ready:
+            try:
+                self.web.RunScriptAsync(script)
+            except Exception:
+                pass
         else:
-            col_width = self.grid.GetColSize(index)
-            # Only save column status if column is actually hideable
-            if self.columns[index][4]:
-                self.options.Set(col_name, col_width)
-            self.grid.HideCol(index)
-        self._stretchLastCol()
+            self._pending_js.append(script)
 
-    def _stretchLastCol(self, event=None):
-        '''
-        Makes sure the last column fills any blank space of the
-        grid. For this reason, the last list item of self.columns should
-        describe an empty column.
-        '''
-        grid_width = self.grid.Size.GetWidth()
-        cols_width = 0
-        for index in range(self.columns[-1][0] + 1):
-            cols_width += self.grid.GetColSize(index)
-        stretch_width = grid_width - cols_width
-        last_col_width = max(
-            self.grid.GetColSize(index) + stretch_width,
-            self.columns[index][3]
-        )
-        self.grid.SetColSize(index, last_col_width)
-        self.Layout()
-        if event is not None:
-            event.Skip(True)
-
-    def _refreshGrid(self):
-        '''Redraws the grid, e.g. after portraits finished loading.'''
-        try:
-            self.grid.ForceRefresh()
-        except RuntimeError:
-            pass  # Grid already destroyed during shutdown
-
-    def _dangerColour(self, danger):
-        '''
-        Heat colour for the zKillboard danger rating: red for
-        dangerous, amber for warm, muted for harmless.
-        '''
-        if danger >= 70:
-            return self.hl1_colour
-        if danger >= 40:
-            return self.acc_colour
-        if danger > 0:
-            return self.txt_colour
-        return self.lbl_colour
-
-    def appendString(self, org, app):
-        """
-        Appends a String to another string with a "+" if the org string is not "".
-
-        :param org: Original String
-        :param app: String which is to be appended to the org string
-        :return:
-        """
-        if org == "-":
-            return app
-        else:
-            return org + " + " + app
-
-    def updateList(self, outlist, duration=None):
-        '''
-        `updateList()` takes the output of `output_list()` in `analyze.py` (via
-        `sortOutlist()`) or a copy thereof stored in self.option, and uses it
-        to populate the grid widget. Before it does so, it checks each
-        item in outlist against a list of ignored characters, corporations
-        and alliances. Finally, it highlights certain characters and
-        updates the statusbar message.
-
-        :param `outlist`: A list of rows with character data.
-
-        :param `duration`: Time in seconds taken to query all relevant
-        databases for each character.
-        '''
-        # If updateList() gets called before outlist has been provided, do
-        # nothing. outlist can also be False (stored default) or empty.
-        if not outlist:
-            return
-        # Ignore outlists persisted by older PySpy versions with fewer columns
-        if len(outlist[0]) < 28:
-            return
-        # Clean up grid
-        if self.grid.GetNumberRows() > 0:
-            self.grid.DeleteRows(numRows=self.grid.GetNumberRows())
-        self.grid.AppendRows(len(outlist))
-        # Add any NPSI fleet related characters to ignored_list
-        npsi_list = self.options.Get("NPSIList", default=[])
-        ignored_list = self.options.Get("ignoredList", default=[])
-        highlighted_list = self.options.Get("highlightedList", default=[])
-        hl_blops = self.options.Get("HlBlops", True)
-        hl_hic = self.options.Get("HlHic", True)
-        hl_cyno = self.options.Get("HlCyno", True)
-        hl_list = self.options.Get("HlList", True)
-        hl_cyno_prob = config.CYNO_HL_PERCENTAGE
-        ignore_count = 0
-        rowidx = 0
-        # Fleet rollup accumulators (non-ignored characters only)
-        rollup_affil = {}
-        rollup_cyno = 0
-        rollup_blops = 0
-        # Character ids per grid row, for the portrait renderer
-        self.row_char_ids = [r[0] for r in outlist]
-        portraits.prefetch(self.row_char_ids, done_callback=self._refreshGrid)
-        for r in outlist:
-
-            ignore = False
-            for rec in ignored_list:
-                if r[0] == rec[0] or r[3] == rec[0] or r[5] == rec[0]:
-                    ignore = True
-            for rec in npsi_list:
-                if r[0] == rec[0]:
-                    ignore = True
-            if ignore:
-                self.grid.HideRow(rowidx)
-                ignore_count += 1
-
-            # Schema depending on output_list() in analyze.py
-            id = r[0]  # Hidden, used for zKillboard link
-            faction_id = r[1]  # Hidden, used for faction ignoring
-            name = r[2]
-            corp_id = r[3]
-            corp_name = r[4]
-            alliance_id = r[5]
-            alliance_name = r[6]
-            faction = r[7] if r[7] is not None else "-"
-            allies = "{:,}".format(int(r[8]))
-
-            # Add number of allies to alliance name
-            if alliance_name is not None:
-                alliance_name = alliance_name + " (" + allies + ")"
-            else:
-                alliance_name = "-"
-
-            # zKillboard data is "n.a." unless available
-            week_kills = kills = blops_kills = hic_losses = "n.a."
-            losses = solo_ratio = sec_status = "n.a."
-
-            if r[13] is not None:
-                week_kills = "{:,}".format(int(r[9])) if int(r[9]) >0 else "-"
-                kills = "{:,}".format(int(r[10]))
-                blops_kills = "{:,}".format(int(r[11])) if int(r[11]) >0 else "-"
-                hic_losses = "{:,}".format(int(r[12])) if int(r[12]) >0 else "-"
-                losses = "{:,}".format(int(r[13]))
-                solo_ratio = "{:.0%}".format(float(r[14]))
-                sec_status = "{:.1f}".format(float(r[15]))
-
-            # PySpy proprietary data is "n.a." unless available
-            last_loss = last_kill = covert_ship = normal_ship = "n.a."
-            avg_attackers = covert_prob = normal_prob = abyssal_losses = "n.a."
-            cov_prob_float = norm_prob_float = 0
-            if r[16] is not None:
-
-                if int(r[16]) > 0:
-                    last_loss = str((
-                        datetime.date.today() -
-                        datetime.datetime.strptime(str(r[16]),'%Y%m%d').date()
-                        ).days) + "d"
-                else:
-                    last_loss = "n.a."
-
-                if int(r[17]) > 0:
-                    last_kill = str((
-                        datetime.date.today() -
-                        datetime.datetime.strptime(str(r[17]),'%Y%m%d').date()
-                        ).days) + "d"
-                else:
-                    last_kill = "n.a."
-
-                avg_attackers = "{:.1f}".format(float(r[18]))
-                cov_prob_float = r[19]
-                covert_prob = "{:.0%}".format(cov_prob_float) if cov_prob_float >0 else "-"
-                norm_prob_float = r[20]
-                normal_prob = "{:.0%}".format(norm_prob_float) if norm_prob_float >0 else "-"
-                covert_ship = r[21]
-                normal_ship = r[22]
-                abyssal_losses = r[23] if int(r[23]) >0 else "-"
-
-            # Enriched zKillboard statistics, "n.a." unless available
-            danger = gang = top_ship = active_tz = "n.a."
-            if r[24] is not None:
-                danger = "{}%".format(int(r[24])) if int(r[24]) > 0 else "-"
-                gang = "{}%".format(int(r[25])) if int(r[25]) > 0 else "-"
-                top_ship = r[26] if r[26] != "-" else "-"
-                active_tz = r[27] if r[27] else "-"
-
-            out = [
-                id,
-                "-",
-                faction_id,
-                name,
-                sec_status,
-                corp_id,
-                corp_name,
-                alliance_id,
-                alliance_name,
-                faction,
-                kills,
-                losses,
-                week_kills,
-                solo_ratio,
-                blops_kills,
-                hic_losses,
-                last_loss,
-                last_kill,
-                avg_attackers,
-                covert_prob,
-                normal_prob,
-                covert_ship,
-                normal_ship,
-                abyssal_losses,
-                danger,
-                gang,
-                top_ship,
-                active_tz
-                ]
-
-            # Accumulate fleet rollup for characters that are not ignored
-            if not ignore:
-                affil = r[6] if r[6] is not None else (
-                    r[4] if r[4] is not None else "No affiliation")
-                rollup_affil[affil] = rollup_affil.get(affil, 0) + 1
-                if cov_prob_float >= hl_cyno_prob or norm_prob_float >= hl_cyno_prob:
-                    rollup_cyno += 1
-                if r[9] is not None and r[11] > 0:
-                    rollup_blops += 1
-
-            # Check if character belongs to a faction that should be ignored
-            if faction_id != 0:
-                if config.IGNORED_FACTIONS == 2 and faction_id % 2 == 0:
-                    self.grid.HideRow(rowidx)
-                if config.IGNORED_FACTIONS == 1 and faction_id % 2 != 0:
-                    self.grid.HideRow(rowidx)
-            colidx = 0
-
-            if hl_blops and r[9] is not None and r[11] > 0:  # Add BLOPS to Warning Column
-                out[1] = self.appendString(out[1], "BLOPS")
-            if hl_hic and r[9] is not None and r[12] > 0:
-                out[1] = self.appendString(out[1], "HIC")  # Add HIC to Warning Column
-            if hl_cyno and (
-                    cov_prob_float >= hl_cyno_prob or norm_prob_float >= hl_cyno_prob):  # Add CYNO to Warnin Column
-                out[1] = self.appendString(out[1], "CYNO")
-
-            # Cell text formatting
-            stripe_colour = self.bg2_colour if rowidx % 2 else self.bg_colour
-            for value in out:
-                color = False
-                self.grid.SetCellValue(rowidx, colidx, str(value))
-                self.grid.SetCellBackgroundColour(rowidx, colidx, stripe_colour)
-                self.grid.SetCellAlignment(
-                    rowidx, colidx, self.columns[colidx][2], wx.ALIGN_CENTRE
-                    )
-                if hl_blops and r[9] is not None and r[11] > 0:  # Highlight BLOPS chars
-                    self.grid.SetCellTextColour(rowidx, colidx, self.hl1_colour)
-                    color = True
-                if hl_hic and r[9] is not None and r[12] > 0:  # Highlight HIC chars
-                    self.grid.SetCellTextColour(rowidx, colidx, self.hl1_colour)
-                    color = True
-                if hl_cyno and (
-                        cov_prob_float >= hl_cyno_prob or norm_prob_float >= hl_cyno_prob):  # Highlight CYNO chars
-                    self.grid.SetCellTextColour(rowidx, colidx, self.hl2_colour)
-                    color = True
-
-                for entry in highlighted_list:  # Highlight chars from highlight list
-                    if hl_list and (entry[1] == out[3] or entry[1] == out[6]or entry[1] == out[8][:-4]):
-                        self.grid.SetCellTextColour(rowidx, colidx, self.hl3_colour)
-                        color = True
-
-                if not color:
-                    if colidx == 24 and r[24] is not None:
-                        # Heat colouring for the danger rating
-                        self.grid.SetCellTextColour(
-                            rowidx, colidx, self._dangerColour(int(r[24]))
-                            )
-                    elif str(value) in ("-", "n.a."):
-                        # Mute placeholder values so real data stands out
-                        self.grid.SetCellTextColour(
-                            rowidx, colidx, self.lbl_colour
-                            )
-                    else:
-                        self.grid.SetCellTextColour(
-                            rowidx, colidx, self.txt_colour
-                            )
-                colidx += 1
-            rowidx += 1
-
-        if duration is not None:
-            statusmsg.push_status(
-                str(len(outlist) - ignore_count) +
-                " characters analysed, in " + str(duration) +
-                " seconds (" + str(ignore_count) + " ignored). Double click " +
-                "character to go to zKillboard."
-                )
-        else:
-            statusmsg.push_status(
-                str(len(outlist) - ignore_count) + " characters analysed (" +
-                str(ignore_count) + " ignored). Double click character to go " +
-                " to zKillboard."
-                )
-
-        self._updateSummary(
-            len(outlist) - ignore_count, rollup_affil, rollup_cyno, rollup_blops
-            )
-
-    def _updateSummary(self, pilot_count, affiliations, cyno_count, blops_count):
-        '''
-        Updates the fleet rollup label above the grid, summarising the
-        analysed characters: pilot count, largest affiliations and the
-        number of cyno-risk and BLOPS-active pilots.
-        '''
-        if pilot_count < 1:
-            self.summary_label.Hide()
-            self.Layout()
-            return
-        top_affils = sorted(
-            affiliations.items(), key=lambda kv: kv[1], reverse=True
-            )
-        segments = [
-            "{:,} pilot{}".format(pilot_count, "s" if pilot_count != 1 else "")
-            ]
-        if top_affils:
-            affil_text = ",  ".join(
-                "{} {}".format(name, count) for name, count in top_affils[:3]
-                )
-            remainder = len(top_affils) - 3
-            if remainder > 0:
-                affil_text += "  (+{} more)".format(remainder)
-            segments.append(affil_text)
-        if cyno_count > 0:
-            segments.append("Cyno risk: " + str(cyno_count))
-        if blops_count > 0:
-            segments.append("BLOPS-active: " + str(blops_count))
-        self.summary_label.SetLabel("   |   ".join(segments))
-        self.summary_label.Show()
-        self.Layout()
-
-    def updateStatusbar(self, msg):
-        '''Gets called by push_status() in statusmsg.py.'''
-        try:
-            if isinstance(msg, str):
-                self.status_label.SetLabel(msg)
-                self.Layout()
-        except RuntimeError:
-            pass  # Widget already destroyed during shutdown
-
-    def updateLocation(self, system_name):
-        '''
-        Shows the player's current solar system (tracked from the EVE
-        Local chat log by chatwatch.py) in the window title and header.
-        '''
-        try:
-            self.SetTitle(config.GUI_TITLE + "  |  " + str(system_name))
-            self.location_label.SetLabel("▸ " + str(system_name))
-            self.header.Layout()
-        except RuntimeError:
-            pass  # Frame already destroyed during shutdown
-
-    def _showMainMenu(self, event=None):
-        '''Pops up the application menu below the header menu button.'''
-        pos = self.menu_btn.GetPosition()
-        self.header.PopupMenu(
-            self.main_menu,
-            wx.Point(pos.x, pos.y + self.menu_btn.GetSize().height)
-            )
+    def _applyTheme(self):
+        theme = "light" if not self.options.Get("DarkMode", True) else "dark"
+        self._js("window.setTheme(" + json.dumps(theme) + ")")
+        self._js("window.setScale(" +
+                 str(self.options.Get("FontScale", 1)) + ")")
+        self._applyTitleBarTheme()
 
     def _applyTitleBarTheme(self):
-        '''Matches the native window title bar to the colour scheme
+        '''Match the native window title bar to the colour scheme
         (Windows 10/11 immersive dark mode).'''
         if os.name != "nt":
             return
@@ -1025,118 +351,396 @@ class Frame(wx.Frame):
         except Exception:
             pass
 
-    def _accelDarkMode(self, event=None):
-        '''Ctrl+D accelerator: toggle the check item, then apply.'''
-        self.dark_mode.Check(not self.dark_mode.IsChecked())
-        self._toggleDarkMode()
+    def _onWebMessage(self, event):
+        try:
+            msg = json.loads(event.GetString())
+        except (ValueError, TypeError):
+            return
+        action = msg.get("action")
+        if action == "menu":
+            self.PopupMenu(self.main_menu)
+        elif action == "alpha":
+            self._setTransparency(msg.get("value", 250))
+        elif action == "zkill":
+            self._goToZKill(msg.get("idx"), msg.get("col", ""))
+        elif action == "context":
+            self._showContextMenu(msg.get("idx"))
 
-    def _accelStayOnTop(self, event=None):
-        '''Ctrl+T accelerator: toggle the check item, then apply.'''
-        self.stay_ontop.Check(not self.stay_ontop.IsChecked())
-        self._toggleStayOnTop()
+    # ==================================================================
+    #  Menu helpers
+    # ==================================================================
+    def _fontScaleMenu(self, lower, upper):
+        for scale in range(lower, upper):
+            scale = scale / 10
+            self.font_sub.AppendRadioItem(wx.ID_ANY, "{:.0%}".format(scale))
+            self.font_sub.Bind(
+                wx.EVT_MENU,
+                lambda evt, scale=scale: self._setFontScale(scale, evt),
+                self.font_sub.MenuItems[-1]
+                )
+            if scale == self.options.Get("FontScale", 1):
+                self.font_sub.MenuItems[-1].Check(True)
 
-    def _toggleChatWatch(self, event=None):
-        checked = self.chat_watch.IsChecked()
-        self.options.Set("ChatWatch", checked)
-        if checked:
-            if chatwatch.find_chatlog_dir() is None:
-                wx.MessageBox(
-                    'No EVE chat logs found. Please enable "Log Chat to '
-                    'File" in the EVE client settings (Settings > Chat) '
-                    'and restart the EVE client.\n\nPySpy will start '
-                    'watching automatically once logs appear.',
-                    'EVE Chat Logs Not Found',
-                    wx.OK | wx.ICON_INFORMATION
-                    )
-            elif not self.options.Get("IntelChannels", ""):
-                self._setIntelChannels()
+    def _setFontScale(self, scale, evt=None):
+        self.options.Set("FontScale", scale)
+        self._js("window.setScale(" + str(scale) + ")")
 
-    def _setIntelChannels(self, event=None):
+    def _createShowColMenuItems(self):
+        '''Populate the View menu with a show/hide toggle for each
+        toggleable column.'''
+        self.col_menu_items = [[] for i in self.columns]
+        for col in self.columns:
+            if not col[4]:  # Not hideable
+                continue
+            index = col[0]
+            options_key = "Show" + col[1]
+            menu_name = "Show " + col[6]
+            self.col_menu_items[index] = self.view_menu.AppendCheckItem(
+                wx.ID_ANY, menu_name
+                )
+            checked = self.options.Get(options_key, self.columns[index][5])
+            self.col_menu_items[index].Check(
+                self.options.Get(options_key, checked)
+                )
+            self.view_menu.Bind(
+                wx.EVT_MENU,
+                lambda evt, index=index: self._toggleColumn(index, evt),
+                self.col_menu_items[index]
+                )
+
+    def _toggleColumn(self, index, event=None):
+        '''Show or hide a column, then re-render.'''
+        self._pushPayload(self._last_payload)
+
+    def _colVisible(self, index):
+        '''Whether a data column is currently shown.'''
+        item = self.col_menu_items[index]
+        if item == []:  # Not toggleable (always shown, e.g. Character)
+            return True
+        return item.IsChecked()
+
+    # ==================================================================
+    #  Rendering
+    # ==================================================================
+    def appendString(self, org, app):
+        if org == "-":
+            return app
+        else:
+            return org + " + " + app
+
+    def updateList(self, outlist, duration=None):
         '''
-        Asks the user for a comma-separated list of intel channel
-        names whose chat logs should be watched for pilot names.
+        Takes the output of `output_list()` in analyze.py (via
+        `sortOutlist()`) and builds a payload for the WebView, applying
+        ignore lists, faction ignoring and highlight rules.
         '''
-        dlg = wx.TextEntryDialog(
-            self,
-            "Enter the names of the intel channels to watch,\n"
-            "separated by commas (channel names as shown in EVE):",
-            "Intel Channels",
-            self.options.Get("IntelChannels", "")
+        if not outlist:
+            self._last_payload = None
+            self._js("window.render(null)")
+            return
+        if len(outlist[0]) < 28:  # Older/incompatible persisted outlist
+            return
+
+        npsi_list = self.options.Get("NPSIList", default=[])
+        ignored_list = self.options.Get("ignoredList", default=[])
+        highlighted_list = self.options.Get("highlightedList", default=[])
+        hl_blops = self.options.Get("HlBlops", True)
+        hl_hic = self.options.Get("HlHic", True)
+        hl_cyno = self.options.Get("HlCyno", True)
+        hl_list = self.options.Get("HlList", True)
+        hl_cyno_prob = config.CYNO_HL_PERCENTAGE
+        ignore_count = 0
+
+        rollup_affil = {}
+        rollup_cyno = 0
+        rollup_blops = 0
+
+        rows = []
+        for rowidx, r in enumerate(outlist):
+            ignore = False
+            for rec in ignored_list:
+                if r[0] == rec[0] or r[3] == rec[0] or r[5] == rec[0]:
+                    ignore = True
+            for rec in npsi_list:
+                if r[0] == rec[0]:
+                    ignore = True
+            if ignore:
+                ignore_count += 1
+
+            # Schema depending on output_list() in analyze.py
+            id = r[0]
+            faction_id = r[1]
+            name = r[2]
+            corp_name = r[4]
+            alliance_name = r[6]
+            faction = r[7] if r[7] is not None else "-"
+            allies = "{:,}".format(int(r[8]))
+
+            if alliance_name is not None:
+                alliance_display = alliance_name + " (" + allies + ")"
+            else:
+                alliance_display = "-"
+
+            week_kills = kills = blops_kills = hic_losses = "n.a."
+            losses = solo_ratio = sec_status = "n.a."
+            if r[13] is not None:
+                week_kills = "{:,}".format(int(r[9])) if int(r[9]) > 0 else "-"
+                kills = "{:,}".format(int(r[10]))
+                blops_kills = "{:,}".format(int(r[11])) if int(r[11]) > 0 else "-"
+                hic_losses = "{:,}".format(int(r[12])) if int(r[12]) > 0 else "-"
+                losses = "{:,}".format(int(r[13]))
+                solo_ratio = "{:.0%}".format(float(r[14]))
+                sec_status = "{:.1f}".format(float(r[15]))
+
+            last_loss = last_kill = covert_ship = normal_ship = "n.a."
+            avg_attackers = covert_prob = normal_prob = abyssal_losses = "n.a."
+            cov_prob_float = norm_prob_float = 0
+            if r[16] is not None:
+                if int(r[16]) > 0:
+                    last_loss = str((
+                        datetime.date.today() -
+                        datetime.datetime.strptime(str(r[16]), '%Y%m%d').date()
+                        ).days) + "d"
+                else:
+                    last_loss = "n.a."
+                if int(r[17]) > 0:
+                    last_kill = str((
+                        datetime.date.today() -
+                        datetime.datetime.strptime(str(r[17]), '%Y%m%d').date()
+                        ).days) + "d"
+                else:
+                    last_kill = "n.a."
+                avg_attackers = "{:.1f}".format(float(r[18]))
+                cov_prob_float = r[19]
+                covert_prob = "{:.0%}".format(cov_prob_float) if cov_prob_float > 0 else "-"
+                norm_prob_float = r[20]
+                normal_prob = "{:.0%}".format(norm_prob_float) if norm_prob_float > 0 else "-"
+                covert_ship = r[21]
+                normal_ship = r[22]
+                abyssal_losses = r[23] if int(r[23]) > 0 else "-"
+
+            danger = gang = top_ship = active_tz = "n.a."
+            danger_val = None
+            if r[24] is not None:
+                danger_val = int(r[24])
+                danger = "{}%".format(int(r[24])) if int(r[24]) > 0 else "-"
+                gang = "{}%".format(int(r[25])) if int(r[25]) > 0 else "-"
+                top_ship = r[26] if r[26] != "-" else "-"
+                active_tz = r[27] if r[27] else "-"
+
+            # Display values, aligned with grid column indices (COL_KEYS)
+            out = [
+                id, "-", faction_id, name, sec_status, r[3], corp_name,
+                r[5], alliance_display, faction, kills, losses, week_kills,
+                solo_ratio, blops_kills, hic_losses, last_loss, last_kill,
+                avg_attackers, covert_prob, normal_prob, covert_ship,
+                normal_ship, abyssal_losses, danger, gang, top_ship, active_tz
+                ]
+
+            # Warning flags
+            warnings = []
+            if hl_blops and r[9] is not None and r[11] > 0:
+                warnings.append("BLOPS")
+            if hl_hic and r[9] is not None and r[12] > 0:
+                warnings.append("HIC")
+            if hl_cyno and (
+                    cov_prob_float >= hl_cyno_prob or norm_prob_float >= hl_cyno_prob):
+                warnings.append("CYNO")
+
+            # Highlight row colour class (precedence: list > cyno > blops/hic)
+            cls = ""
+            if (hl_blops and r[9] is not None and r[11] > 0) or \
+               (hl_hic and r[9] is not None and r[12] > 0):
+                cls = "hl1"
+            if hl_cyno and (
+                    cov_prob_float >= hl_cyno_prob or norm_prob_float >= hl_cyno_prob):
+                cls = "hl2"
+            if hl_list:
+                for entry in highlighted_list:
+                    if entry[1] == name or entry[1] == corp_name or \
+                            (alliance_name and entry[1] == alliance_name):
+                        cls = "hl3"
+                        break
+
+            # Faction ignoring hides the row
+            hidden = ignore
+            if faction_id != 0:
+                if config.IGNORED_FACTIONS == 2 and faction_id % 2 == 0:
+                    hidden = True
+                if config.IGNORED_FACTIONS == 1 and faction_id % 2 != 0:
+                    hidden = True
+
+            # Fleet rollup (non-ignored characters only)
+            if not ignore:
+                affil = r[6] if r[6] is not None else (
+                    r[4] if r[4] is not None else "No affiliation")
+                rollup_affil[affil] = rollup_affil.get(affil, 0) + 1
+                if cov_prob_float >= hl_cyno_prob or norm_prob_float >= hl_cyno_prob:
+                    rollup_cyno += 1
+                if r[9] is not None and r[11] > 0:
+                    rollup_blops += 1
+
+            # Build display + sort dicts keyed by column key
+            d = {}
+            s = {}
+            for gi in range(len(COL_KEYS)):
+                if gi in HIDDEN_COLS:
+                    continue
+                key = COL_KEYS[gi]
+                d[key] = str(out[gi])
+                s[key] = self._sortValue(gi, key, r, out[gi])
+
+            rows.append({
+                "idx": rowidx,
+                "charId": id,
+                "cls": cls,
+                "hidden": hidden,
+                "warnings": warnings,
+                "dangerVal": danger_val,
+                "d": d,
+                "s": s,
+                })
+
+        pilots = len(outlist) - ignore_count
+        top_affils = sorted(
+            rollup_affil.items(), key=lambda kv: kv[1], reverse=True
             )
-        if dlg.ShowModal() == wx.ID_OK:
-            self.options.Set("IntelChannels", dlg.GetValue())
-        dlg.Destroy()
+        summary = {
+            "pilots": pilots,
+            "ignored": ignore_count,
+            "affils": top_affils[:3],
+            "more": max(0, len(top_affils) - 3),
+            "cyno": rollup_cyno,
+            "blops": rollup_blops,
+            }
 
-    def _toggleKillFeed(self, event=None):
-        self.options.Set("KillFeed", self.kill_feed.IsChecked())
+        columns = []
+        for col in self.columns:
+            gi = col[0]
+            if gi in HIDDEN_COLS:
+                continue
+            key = COL_KEYS[gi]
+            columns.append({
+                "key": key,
+                "label": col[1],
+                "num": col[2] == wx.ALIGN_RIGHT,
+                "visible": self._colVisible(gi),
+                })
 
-    def _goToZKill(self, event):
-        rowidx = event.GetRow()
+        payload = {"columns": columns, "rows": rows, "summary": summary}
+        self._pushPayload(payload)
 
+        if duration is not None:
+            statusmsg.push_status(
+                str(pilots) + " characters analysed, in " + str(duration) +
+                " seconds (" + str(ignore_count) + " ignored). Double click "
+                "a pilot to open zKillboard."
+                )
+        else:
+            statusmsg.push_status(
+                str(pilots) + " characters analysed (" + str(ignore_count) +
+                " ignored). Double click a pilot to open zKillboard."
+                )
+
+    def _sortValue(self, grid_idx, key, r, display):
+        '''Compute a sortable value for a cell.'''
+        if key == "danger":
+            return r[24] if r[24] is not None else -1
+        if key == "gang":
+            return r[25] if r[25] is not None else -1
+        if key == "lastloss" or key == "lastkill":
+            raw = r[16] if key == "lastloss" else r[17]
+            if raw is None or int(raw) <= 0:
+                return -1
+            return (
+                datetime.date.today() -
+                datetime.datetime.strptime(str(raw), '%Y%m%d').date()
+                ).days
+        if key in NUMERIC_KEYS:
+            outidx = None
+            for col in self.columns:
+                if col[0] == grid_idx and len(col) > 7:
+                    outidx = col[7]
+                    break
+            if outidx is not None and r[outidx] is not None:
+                try:
+                    return float(r[outidx])
+                except (ValueError, TypeError):
+                    return -1
+            return -1
+        return str(display).lower()
+
+    def _pushPayload(self, payload):
+        if payload is None:
+            return
+        self._last_payload = payload
+        self._js("window.render(" + json.dumps(payload) + ")")
+
+    def updateStatusbar(self, msg):
+        if isinstance(msg, str):
+            self._js("window.setStatus(" + json.dumps(msg) + ")")
+            # Kill feed / watchlist alerts also raise a snackbar
+            if msg.startswith("KILL IN ") or msg.startswith("WATCHLIST"):
+                self._js("window.snackbar(" + json.dumps(msg) + ")")
+
+    def updateLocation(self, system_name):
+        try:
+            self.SetTitle(config.GUI_TITLE + "  |  " + str(system_name))
+            self._js("window.setLocation(" + json.dumps(str(system_name)) + ")")
+        except RuntimeError:
+            pass
+
+    # ==================================================================
+    #  Interactions from the WebView
+    # ==================================================================
+    def _setTransparency(self, value):
+        alpha = int(value)
+        self.SetTransparent(alpha)
+        self.options.Set("GuiAlpha", alpha)
+
+    def _goToZKill(self, rowidx, colkey=""):
+        if rowidx is None:
+            return
+        outlist = self.options.Get("outlist")
+        if not outlist or rowidx >= len(outlist):
+            return
+        row = outlist[rowidx]
         url = "https://zkillboard.com/"
 
-        # If we want zkillboard advanced linking then just link to the character sheet
         if self.options.Get("ZkillMode", False):
-            colidx = event.GetCol()
+            if colkey == "corporation":
+                url = url + "corporation/" + str(row[3]) + "/"
+            elif colkey == "alliance":
+                if row[5] is not None:
+                    url = url + "alliance/" + str(row[5]) + "/"
+            elif colkey == "faction":
+                if row[1] is not None:
+                    url = url + "faction/" + str(row[1]) + "/"
+            elif colkey not in ("name", ""):
+                url = url + "character/" + str(row[0]) + "/"
+                modifiers = {
+                    "kills": "kills/", "losses": "losses/", "solo": "solo/",
+                    "blops": "group/898/", "hics": "group/894/",
+                    "abyssal": "abyssal/",
+                    }
+                if colkey in modifiers:
+                    url = url + modifiers[colkey]
 
-            # Corporation was clicked on, link to that killboard
-            if colidx == 6:
-                corporation_id = self.options.Get("outlist")[rowidx][3]
-                url = url + "corporation/" + str(corporation_id) + "/"
-
-            # Alliance was clicked on, link to that killboard if alliance exists
-            elif colidx == 8:
-                alliance_id = self.options.Get("outlist")[rowidx][5]
-                if alliance_id != None:
-                    url = url + "alliance/" + str(alliance_id) + "/"
-
-            # Faction was clicked on, link to that killboard if faction exists
-            elif colidx == 9:
-                faction_id = self.options.Get("outlist")[rowidx][1]
-                if faction_id != None:
-                    url = url + "faction/" + str(faction_id) + "/"
-
-            # Something other than character was clicked on but we want to look at the character with modifiers
-            elif colidx != 3:
-                # Set up the character base url
-                character_id = self.options.Get("outlist")[rowidx][0]
-                url = url + "character/" + str(character_id) + "/"
-
-                # Kills modifier
-                if colidx == 10:
-                    url = url + "kills/"
-                # Losses modifier
-                elif colidx == 11:
-                    url = url + "losses/"
-                # Solo Modifier
-                elif colidx == 13:
-                    url = url + "solo/"
-                # BLOPS Modifer
-                elif colidx == 14:
-                    url = url + "group/898/"
-                # HIC Modifier
-                elif colidx == 15:
-                    url = url + "group/894/"
-                # Abyssal Modifier
-                elif colidx == 23:
-                    url = url + "abyssal/"
-
-            # This is a catch all if the url wasnt set or if a column other than a special one was clicked.
-            # This is in a seperate flow to the above in case any of the above need to fall through
         if url == "https://zkillboard.com/":
-            character_id = self.options.Get("outlist")[rowidx][0]
-            url = url + "character/" + str(character_id) + "/"
-
+            url = url + "character/" + str(row[0]) + "/"
         webbrowser.open_new_tab(url)
 
-    def _showContextMenu(self, event):
-        '''
-        Gets invoked by right click on any list item and produces a
-        context menu that allows the user to add the selected character/corp/alliance
-        to PySpy's list of "ignored characters" which will no longer be
-        shown in search results and add the selected character/corp/alliance
-        to PySpy's list of "highlighted characters" which will hihglight them in the grid.
-        '''
+    def _showContextMenu(self, rowidx):
+        '''Right-click menu to ignore / highlight the pilot, corp or
+        alliance in the given row.'''
+        outlist = self.options.Get("outlist")
+        if not outlist or rowidx is None or rowidx >= len(outlist):
+            return
+        r = outlist[rowidx]
+        character_id, character_name = r[0], r[2]
+        corp_id, corp_name = r[3], r[4]
+        alliance_id, alliance_name = r[5], r[6]
+
         def OnIgnore(id, name, type, e=None):
             ignored_list = self.options.Get("ignoredList", default=[])
             ignored_list.append([id, name, type])
@@ -1157,190 +761,61 @@ class Frame(wx.Frame):
             self.updateList(self.options.Get("outlist", None))
 
         highlighted_list = self.options.Get("highlightedList", default=[])
-        rowidx = event.GetRow()
-        character_id = str(self.options.Get("outlist")[rowidx][0])
-        # Only open context menu character item right clicked, not empty line.
-        if len(character_id) > 0:
-            outlist = self.options.Get("outlist")
-            for r in outlist:
-                if str(r[0]) == character_id:
-                    character_id = r[0]
-                    character_name = r[2]
-                    corp_id = r[3]
-                    corp_name = r[4]
-                    alliance_id = r[5]
-                    alliance_name = r[6]
-                    break
-            self.menu = wx.Menu()
-            # Context menu to ignore characters, corporations and alliances.
-            item_ig_char = self.menu.Append(
-                wx.ID_ANY, "Ignore character '" + character_name + "'"
-                )
-            self.menu.Bind(
-                wx.EVT_MENU,
-                lambda evt, id=character_id, name=character_name: OnIgnore(id, name, "Character", evt),
-                item_ig_char
-                )
+        menu = wx.Menu()
 
-            item_ig_corp = self.menu.Append(
-                wx.ID_ANY, "Ignore corporation: '" + corp_name + "'"
-                )
-            self.menu.Bind(
-                wx.EVT_MENU,
-                lambda evt, id=corp_id, name=corp_name: OnIgnore(id, name, "Corporation", evt),
-                item_ig_corp
-                )
+        item = menu.Append(wx.ID_ANY, "Ignore character '" + character_name + "'")
+        menu.Bind(wx.EVT_MENU, lambda e, i=character_id, n=character_name: OnIgnore(i, n, "Character", e), item)
+        item = menu.Append(wx.ID_ANY, "Ignore corporation: '" + corp_name + "'")
+        menu.Bind(wx.EVT_MENU, lambda e, i=corp_id, n=corp_name: OnIgnore(i, n, "Corporation", e), item)
+        if alliance_name is not None:
+            item = menu.Append(wx.ID_ANY, "Ignore alliance: '" + alliance_name + "'")
+            menu.Bind(wx.EVT_MENU, lambda e, i=alliance_id, n=alliance_name: OnIgnore(i, n, "Alliance", e), item)
 
-            if alliance_name is not None:
-                item_ig_alliance = self.menu.Append(
-                    wx.ID_ANY, "Ignore alliance: '" + alliance_name + "'"
-                    )
-                self.menu.Bind(
-                    wx.EVT_MENU,
-                    lambda evt, id=alliance_id, name=alliance_name: OnIgnore(id, name, "Alliance", evt),
-                    item_ig_alliance
-                    )
+        menu.AppendSeparator()
 
-            self.menu.AppendSeparator()
+        hl_char = hl_corp = hl_alliance = False
+        for entry in highlighted_list:
+            if entry[1] == character_name:
+                hl_char = True
+            if entry[1] == corp_name:
+                hl_corp = True
+            if alliance_name is not None and entry[1] == alliance_name:
+                hl_alliance = True
 
-            hl_char = False
-            hl_corp = False
-            hl_alliance = False
+        if not hl_char:
+            item = menu.Append(wx.ID_ANY, "Highlight character '" + character_name + "'")
+            menu.Bind(wx.EVT_MENU, lambda e, i=character_id, n=character_name: OnHighlight(i, n, "Character", e), item)
+        else:
+            item = menu.Append(wx.ID_ANY, "Stop highlighting character '" + character_name + "'")
+            menu.Bind(wx.EVT_MENU, lambda e, i=character_id, n=character_name: OnDeHighlight(i, n, "Character", e), item)
 
-            for entry in highlighted_list:
-                if entry[1] == self.options.Get("outlist")[rowidx][2]:
-                    hl_char = True
-                if entry[1] == self.options.Get("outlist")[rowidx][4]:
-                    hl_corp = True
-                if alliance_name is not None:
-                    if entry[1] == self.options.Get("outlist")[rowidx][6]:
-                        hl_alliance = True
+        if not hl_corp:
+            item = menu.Append(wx.ID_ANY, "Highlight corporation '" + corp_name + "'")
+            menu.Bind(wx.EVT_MENU, lambda e, i=corp_id, n=corp_name: OnHighlight(i, n, "Corporation", e), item)
+        else:
+            item = menu.Append(wx.ID_ANY, "Stop highlighting corporation '" + corp_name + "'")
+            menu.Bind(wx.EVT_MENU, lambda e, i=corp_id, n=corp_name: OnDeHighlight(i, n, "Corporation", e), item)
 
-            # Context menu to highlight characters, corporations and alliances
-            if not hl_char:
-                item_hl_char = self.menu.Append(
-                    wx.ID_ANY, "Highlight character '" + character_name + "'"
-                )
-                self.menu.Bind(
-                   wx.EVT_MENU,
-                   lambda evt, id=character_id, name=character_name: OnHighlight(id, name, "Character", evt),
-                    item_hl_char
-                )
+        if alliance_name is not None:
+            if not hl_alliance:
+                item = menu.Append(wx.ID_ANY, "Highlight alliance: '" + alliance_name + "'")
+                menu.Bind(wx.EVT_MENU, lambda e, i=alliance_id, n=alliance_name: OnHighlight(i, n, "Alliance", e), item)
             else:
-                item_hl_char = self.menu.Append(
-                    wx.ID_ANY, "Stop highlighting character '" + character_name + "'"
-                )
-                self.menu.Bind(
-                    wx.EVT_MENU,
-                    lambda evt, id=character_id, name=character_name: OnDeHighlight(id, name, "Character", evt),
-                    item_hl_char
-                )
+                item = menu.Append(wx.ID_ANY, "Stop highlighting alliance: '" + alliance_name + "'")
+                menu.Bind(wx.EVT_MENU, lambda e, i=alliance_id, n=alliance_name: OnDeHighlight(i, n, "Alliance", e), item)
 
-            if not hl_corp:
-                item_hl_corp = self.menu.Append(
-                    wx.ID_ANY, "Highlight corporation '" + corp_name + "'"
-                )
-                self.menu.Bind(
-                    wx.EVT_MENU,
-                    lambda evt, id=corp_id, name=corp_name: OnHighlight(id, name, "Corporation", evt),
-                    item_hl_corp
-                )
-            else:
-                item_hl_corp = self.menu.Append(
-                    wx.ID_ANY, "Stop highlighting corporation '" + corp_name + "'"
-                )
-                self.menu.Bind(
-                    wx.EVT_MENU,
-                    lambda evt, id=corp_id, name=corp_name: OnDeHighlight(id, name, "Corporation", evt),
-                    item_hl_corp
-                )
-
-            if alliance_name is not None:
-                if not hl_alliance:
-                    item_hl_alliance = self.menu.Append(
-                        wx.ID_ANY, "Highlight alliance: '" + alliance_name + "'"
-                        )
-                    self.menu.Bind(
-                        wx.EVT_MENU,
-                        lambda evt, id=alliance_id, name=alliance_name: OnHighlight(id, name, "Alliance", evt),
-                        item_hl_alliance
-                        )
-                else:
-                    item_hl_alliance = self.menu.Append(
-                        wx.ID_ANY, "Stop highlighting alliance: '" + alliance_name + "'"
-                    )
-                    self.menu.Bind(
-                        wx.EVT_MENU,
-                        lambda evt, id=alliance_id, name=alliance_name: OnDeHighlight(id, name, "Alliance", evt),
-                        item_hl_alliance
-                    )
-
-            self.PopupMenu(self.menu, event.GetPosition())
-            self.menu.Destroy()
+        self.PopupMenu(menu)
+        menu.Destroy()
 
     def sortOutlist(self, event=None, outlist=None, duration=None):
-        '''
-        If called by event handle, i.e. user
-        '''
-        if event is None:
-            # Default sort by character name ascending.
-            colidx = self.options.Get("SortColumn", self.columns[3][7])
-            sort_desc = self.options.Get("SortDesc", False)
-        else:
-            colidx = event.GetCol()
-            if self.options.Get("SortColumn", -1) == colidx:
-                sort_desc = not self.options.Get("SortDesc")
-            else:
-                sort_desc = True
-
-        # Use unicode characters for sort indicators
-        arrow = u"\u2193" if sort_desc else u"\u2191"
-
-        # Reset all labels
-        for col in self.columns:
-            self.grid.SetColLabelValue(col[0], col[1])
-
-        # Assign sort indicator to sort column
-        self.grid.SetColLabelValue(
-            colidx,
-            self.columns[colidx][1] + " " + arrow
-            )
-        self.options.Set("SortColumn", colidx)
-        self.options.Set("SortDesc", sort_desc)
-        event = None
-        # Sort outlist. Note: outlist columns are not the same as
-        # self.grid columns!!!
+        '''Stores the outlist and renders it. Sorting itself now happens
+        in the WebView; this keeps compatibility with callers.'''
         if outlist is None:
             outlist = self.options.Get("outlist", False)
-
-        if outlist and colidx != 1:
-            outlist = sortarray.sort_array(
-                outlist,
-                self.columns[colidx][7],
-                sec_col=self.columns[2][7],  # Secondary sort by name
-                prim_desc=sort_desc,
-                sec_desc=False,  # Secondary sort by name always ascending
-                case_sensitive=False
-                )
         self.options.Set("outlist", outlist)
         self.updateList(outlist, duration=duration)
 
-    def _setTransparency(self, event=None):
-        '''
-        Sets window transparency based off slider setting and stores
-        value in self.options.
-        '''
-        alpha = self.alpha_slider.GetValue()
-        self.SetTransparent(alpha)
-        self.options.Set("GuiAlpha", alpha)
-        self.Layout()
-
     def updateAlert(self, latest_ver, cur_ver):
-        '''
-        Simple dialog box to notify user when new version of PySpy is
-        available for download. Gets called by chk_github_update()
-        in chkversion.py.
-        '''
         self.ToggleWindowStyle(wx.STAY_ON_TOP)
         msgbox = wx.MessageBox(
             "PySpy " + str(latest_ver) + " is now available. You are running " +
@@ -1354,18 +829,18 @@ class Frame(wx.Frame):
                 )
         self.ToggleWindowStyle(wx.STAY_ON_TOP)
 
+    # ==================================================================
+    #  Option toggles / dialogs
+    # ==================================================================
     def _toggleIgnoreFactions(self, e):
-        ig_galmin = self.ignore_galmin.IsChecked()
-        ig_amacal = self.ignore_amacal.IsChecked()
-        ig_none = self.ignore_none.IsChecked()
-        if ig_galmin:
-            config.IGNORED_FACTIONS = 2  # Gallente & Minmatar have even ids
+        if self.ignore_galmin.IsChecked():
+            config.IGNORED_FACTIONS = 2
             self.options.Set("IgnoredFactions", 2)
-        if ig_amacal:
-            config.IGNORED_FACTIONS = 1  # Amarr & Caldari have uneven ids
+        if self.ignore_amacal.IsChecked():
+            config.IGNORED_FACTIONS = 1
             self.options.Set("IgnoredFactions", 1)
-        if ig_none:
-            config.IGNORED_FACTIONS = None  # Amarr & Caldari have uneven ids
+        if self.ignore_none.IsChecked():
+            config.IGNORED_FACTIONS = None
             self.options.Set("IgnoredFactions", 0)
         self.updateList(self.options.Get("outlist", None))
 
@@ -1380,62 +855,85 @@ class Frame(wx.Frame):
         self.options.Set("StayOnTop", self.stay_ontop.IsChecked())
         self.ToggleWindowStyle(wx.STAY_ON_TOP)
 
+    def _accelDarkMode(self, event=None):
+        self.dark_mode.Check(not self.dark_mode.IsChecked())
+        self._toggleDarkMode()
+
+    def _accelStayOnTop(self, event=None):
+        self.stay_ontop.Check(not self.stay_ontop.IsChecked())
+        self._toggleStayOnTop()
+
     def _toggleDarkMode(self, evt=None):
         self.options.Set("DarkMode", self.dark_mode.IsChecked())
         self.use_dm = self.dark_mode.IsChecked()
-        self.__set_properties(dark_toggle=True)
-        self.Refresh()
-        self.Update()
-        self.updateList(self.options.Get("outlist"))
+        self._applyTheme()
+
+    def _toggleChatWatch(self, event=None):
+        checked = self.chat_watch.IsChecked()
+        self.options.Set("ChatWatch", checked)
+        if checked:
+            if chatwatch.find_chatlog_dir() is None:
+                wx.MessageBox(
+                    'No EVE chat logs found. Please enable "Log Chat to '
+                    'File" in the EVE client settings (Settings > Chat) '
+                    'and restart the EVE client.\n\nPySpy will start '
+                    'watching automatically once logs appear.',
+                    'EVE Chat Logs Not Found',
+                    wx.OK | wx.ICON_INFORMATION
+                    )
+            elif not self.options.Get("IntelChannels", ""):
+                self._setIntelChannels()
+
+    def _setIntelChannels(self, event=None):
+        dlg = wx.TextEntryDialog(
+            self,
+            "Enter the names of the intel channels to watch,\n"
+            "separated by commas (channel names as shown in EVE):",
+            "Intel Channels",
+            self.options.Get("IntelChannels", "")
+            )
+        if dlg.ShowModal() == wx.ID_OK:
+            self.options.Set("IntelChannels", dlg.GetValue())
+        dlg.Destroy()
+
+    def _toggleKillFeed(self, event=None):
+        self.options.Set("KillFeed", self.kill_feed.IsChecked())
 
     def _openAboutDialog(self, evt=None):
-        '''
-        Checks if AboutDialog is already open. If not, opens the dialog
-        window, otherwise brings the existing dialog window to the front.
-        '''
         for c in self.GetChildren():
-            if c.GetName() == "AboutDialog":  # Needs to match name in aboutdialog.py
+            if c.GetName() == "AboutDialog":
                 c.Raise()
                 return
         aboutdialog.showAboutBox(self)
 
     def _openIgnoreDialog(self, evt=None):
-        '''
-        Checks if IgnoreDialog is already open. If not, opens the dialog
-        window, otherwise brings the existing dialog window to the front.
-        '''
         for c in self.GetChildren():
-            if c.GetName() == "IgnoreDialog":  # Needs to match name in ignoredialog.py
+            if c.GetName() == "IgnoreDialog":
                 c.Raise()
                 return
         ignoredialog.showIgnoreDialog(self)
 
     def _openHightlightDialog(self, evt=None):
-        '''
-        Checks if HightlightDialog is already open. If not, opens the dialog
-        window, otherwise brings the existing dialog window to the front.
-        '''
         for c in self.GetChildren():
-            if c.GetName() == "HighlightDialog":  # Needs to match name in highlightdialog.py
+            if c.GetName() == "HighlightDialog":
                 c.Raise()
                 return
         highlightdialog.showHighlightDialog(self)
 
     def _showNpsiDialog(self, evt=None):
         dialog = wx.MessageBox(
-            "Do you want to ignore all currently shown characters? " +
+            "Do you want to ignore all currently shown characters? "
             "You can undo this under `Options > Clear NPSI Ignore List`.",
             "NPSI Ignore List",
             wx.YES_NO | wx.YES_DEFAULT | wx.ICON_QUESTION
             )
-        if dialog == 2:  # Yes
+        if dialog == 2:
             npsi_list = []
             outlist = self.options.Get("outlist", None)
             if outlist is None:
                 return
             for r in outlist:
-                character_id = [r[0]]  # Needs to be list to append to ignored_list
-                npsi_list.append(character_id)
+                npsi_list.append([r[0]])
             self.options.Set("NPSIList", npsi_list)
             self.updateList(outlist)
 
@@ -1445,69 +943,16 @@ class Frame(wx.Frame):
             "NPSI Ignore List",
             wx.YES_NO | wx.YES_DEFAULT | wx.ICON_QUESTION
             )
-        if dialog == 2:  # Yes
+        if dialog == 2:
             self.options.Set("NPSIList", [])
             self.updateList(self.options.Get("outlist", None))
 
     def _toggleZkillMode(self, evt=None):
         self.options.Set("ZkillMode", self.zkill_mode.IsChecked())
         self.use_adv_zkill = self.zkill_mode.IsChecked()
-        # This just prevents all settings from being updated.
-        self.__set_properties(dark_toggle=True)
-        self.Refresh()
-        self.Update()
-        self.updateList(self.options.Get("outlist"))
-
-    def _restoreColWidth(self):
-        '''
-        Restores column width either to default or value stored from
-        previous session.
-        '''
-        for col in self.columns:
-            header = col[1]
-            # Column width is also set in _toggleColumn()
-            width = self.options.Get(header, col[3])
-            menu_item = self.col_menu_items[col[0]]
-            if menu_item == [] or menu_item.IsChecked():
-                self.grid.SetColSize(col[0], width)
-            else:
-                self.grid.SetColSize(col[0], 0)
-            pass
-
-    def _saveColumns(self):
-        '''
-        Saves custom column widths, since wxpython's Persistence Manager
-        is unable to do so for Grid widgets.
-        '''
-        for col in self.columns:
-            is_hideable = col[4]
-            default_show = col[5]
-            header = col[1]
-            options_key = "Show" + header
-            width = self.grid.GetColSize(col[0])
-            try:
-                menu_item_chk = self.col_menu_items[col[0]].IsChecked()
-            except:
-                menu_item_chk = False
-            # Only save column width for columns that are not hidden or
-            # not hideable and shown by default.
-            if menu_item_chk or (not is_hideable and default_show):
-                self.options.Set(header, width)
-            # Do not add menu item if column not hideable
-            if col[4]:
-                self.options.Set(options_key, menu_item_chk)
-            pass
 
     def OnClose(self, event=None):
-        '''
-        Run a few clean-up tasks on close and save persistent properties.
-        '''
         self._persistMgr.SaveAndUnregister()
-
-        # Save column toggle menu state and column width in pickle container
-        self._saveColumns()
-
-        # Store check-box values in pickle container
         self.options.Set("HlBlops", self.hl_blops.IsChecked())
         self.options.Set("HlCyno", self.hl_cyno.IsChecked())
         self.options.Set("IgnoreGalMin", self.ignore_galmin.IsChecked())
@@ -1515,10 +960,14 @@ class Frame(wx.Frame):
         self.options.Set("IgnoreNone", self.ignore_none.IsChecked())
         self.options.Set("StayOnTop", self.stay_ontop.IsChecked())
         self.options.Set("DarkMode", self.dark_mode.IsChecked())
-        # Delete last outlist and NPSIList
+        # Save which columns are shown
+        for col in self.columns:
+            if col[4]:
+                self.options.Set(
+                    "Show" + col[1], self._colVisible(col[0])
+                    )
         self.options.Set("outlist", None)
         self.options.Set("NPSIList", [])
-        # Write pickle container to disk
         self.options.Save()
         event.Skip() if event else False
 
@@ -1527,11 +976,11 @@ class Frame(wx.Frame):
 
     def clear_character_cache(self, e):
         conn, cur = db.connect_persistent_db()
-        query_statement = '''DELETE FROM characters'''
-        cur.execute(query_statement)
+        cur.execute('''DELETE FROM characters''')
         conn.commit()
         conn.close()
         statusmsg.push_status("Cleared character cache")
+
 
 class App(wx.App):
     def OnInit(self):
