@@ -21,6 +21,7 @@ import aboutdialog
 import chatwatch
 import highlightdialog
 import ignoredialog
+import portraits
 import sortarray
 import statusmsg
 # cSpell Checker - Correct Words****************************************
@@ -30,6 +31,104 @@ import statusmsg
 # **********************************************************************
 Logger = logging.getLogger(__name__)
 # Example call: Logger.info("Something badhappened", exc_info=True) ****
+
+
+class CharacterCellRenderer(wx.grid.GridCellRenderer):
+    '''
+    Draws the character's portrait (from CCP's image server, cached by
+    portraits.py) next to the character name.
+    '''
+    def __init__(self, frame):
+        super(CharacterCellRenderer, self).__init__()
+        self._frame = frame
+
+    def Draw(self, grid, attr, dc, rect, row, col, isSelected):
+        bg = (
+            grid.GetSelectionBackground() if isSelected
+            else attr.GetBackgroundColour()
+            )
+        dc.SetBrush(wx.Brush(bg))
+        dc.SetPen(wx.Pen(bg))
+        dc.DrawRectangle(rect)
+        dc.SetClippingRegion(rect)
+        x = rect.x + 6
+        char_ids = self._frame.row_char_ids
+        bmp = portraits.get(char_ids[row]) if row < len(char_ids) else None
+        if bmp is not None:
+            dc.DrawBitmap(
+                bmp, x, rect.y + (rect.height - bmp.GetHeight()) // 2, True
+                )
+        x += self._frame.portrait_px + 8
+        dc.SetFont(attr.GetFont())
+        dc.SetTextForeground(
+            grid.GetSelectionForeground() if isSelected
+            else attr.GetTextColour()
+            )
+        text = grid.GetCellValue(row, col)
+        th = dc.GetTextExtent(text).height
+        dc.DrawText(text, x, rect.y + (rect.height - th) // 2)
+        dc.DestroyClippingRegion()
+
+    def GetBestSize(self, grid, attr, dc, row, col):
+        dc.SetFont(attr.GetFont())
+        extent = dc.GetTextExtent(grid.GetCellValue(row, col))
+        return wx.Size(
+            extent.width + self._frame.portrait_px + 20,
+            max(extent.height + 4, self._frame.portrait_px + 6)
+            )
+
+    def Clone(self):
+        return CharacterCellRenderer(self._frame)
+
+
+class WarningChipRenderer(wx.grid.GridCellRenderer):
+    '''
+    Draws the warning flags (CYNO, BLOPS, HIC) as rounded,
+    colour-coded chips instead of plain text.
+    '''
+    def __init__(self, frame):
+        super(WarningChipRenderer, self).__init__()
+        self._frame = frame
+
+    def Draw(self, grid, attr, dc, rect, row, col, isSelected):
+        bg = (
+            grid.GetSelectionBackground() if isSelected
+            else attr.GetBackgroundColour()
+            )
+        dc.SetBrush(wx.Brush(bg))
+        dc.SetPen(wx.Pen(bg))
+        dc.DrawRectangle(rect)
+        text = grid.GetCellValue(row, col)
+        if text in ("", "-"):
+            return
+        dc.SetClippingRegion(rect)
+        font = attr.GetFont().Smaller().MakeBold()
+        dc.SetFont(font)
+        x = rect.x + 4
+        for token in [t.strip() for t in text.split("+") if t.strip()]:
+            colour = (
+                self._frame.hl2_colour if token == "CYNO"
+                else self._frame.hl1_colour
+                )
+            extent = dc.GetTextExtent(token)
+            chip_w = extent.width + 12
+            chip_h = extent.height + 4
+            chip_y = rect.y + (rect.height - chip_h) // 2
+            dc.SetBrush(wx.Brush(colour))
+            dc.SetPen(wx.Pen(colour))
+            dc.DrawRoundedRectangle(x, chip_y, chip_w, chip_h, chip_h // 2)
+            dc.SetTextForeground(self._frame.bg_colour)
+            dc.DrawText(token, x + 6, chip_y + 2)
+            x += chip_w + 4
+        dc.DestroyClippingRegion()
+
+    def GetBestSize(self, grid, attr, dc, row, col):
+        dc.SetFont(attr.GetFont())
+        extent = dc.GetTextExtent(grid.GetCellValue(row, col))
+        return wx.Size(extent.width + 30, extent.height + 8)
+
+    def Clone(self):
+        return WarningChipRenderer(self._frame)
 
 
 class Frame(wx.Frame):
@@ -57,7 +156,7 @@ class Frame(wx.Frame):
             [0, "ID", wx.ALIGN_LEFT, 0, False, False, "", 0],
             [1, "Warning", wx.ALIGN_LEFT, 80, True, True, "Warning\tCTRL+ALT+X"],
             [2, "Faction ID", wx.ALIGN_LEFT, 0, False, False, "", 1],
-            [3, "Character", wx.ALIGN_LEFT, 100, False, True, "", 2],
+            [3, "Character", wx.ALIGN_LEFT, 160, False, True, "", 2],
             [4, "Security", wx.ALIGN_RIGHT, 50, True, False, "&Security\tCTRL+ALT+S", 15],
             [5, "CorpID", wx.ALIGN_LEFT, 0, False, False, "", 3],
             [6, "Corporation", wx.ALIGN_LEFT, 100, True, True, "Cor&poration\tCTRL+ALT+P", 4],
@@ -85,21 +184,15 @@ class Frame(wx.Frame):
             [28, "", None, 1, False, True, ""],  # Need for _stretchLastCol()
             )
 
-        # Define the menu bar and menu items
-        self.menubar = wx.MenuBar()
-        self.menubar.SetName("Menubar")
-        if os.name == "nt":  # For Windows
-            self.file_menu = wx.Menu()
-            self.file_about = self.file_menu.Append(wx.ID_ANY, '&About\tCTRL+A')
-            self.file_menu.Bind(wx.EVT_MENU, self._openAboutDialog, self.file_about)
-            self.file_quit = self.file_menu.Append(wx.ID_ANY, 'Quit PySpy')
-            self.file_menu.Bind(wx.EVT_MENU, self.OnQuit, self.file_quit)
-            self.menubar.Append(self.file_menu, 'File')
-        if os.name == "posix":  # For macOS
-            self.help_menu = wx.Menu()
-            self.help_about = self.help_menu.Append(wx.ID_ANY, '&About\tCTRL+A')
-            self.help_menu.Bind(wx.EVT_MENU, self._openAboutDialog, self.help_about)
-            self.menubar.Append(self.help_menu, 'Help')
+        # All actions live in one popup menu behind the header's menu
+        # button - the native menu bar is gone for a cleaner look.
+        self.main_menu = wx.Menu()
+
+        self.file_menu = wx.Menu()
+        self.file_about = self.file_menu.Append(wx.ID_ANY, '&About\tCTRL+A')
+        self.file_menu.Bind(wx.EVT_MENU, self._openAboutDialog, self.file_about)
+        self.file_quit = self.file_menu.Append(wx.ID_ANY, 'Quit PySpy')
+        self.file_menu.Bind(wx.EVT_MENU, self.OnQuit, self.file_quit)
 
         # View menu is platform independent
         self.view_menu = wx.Menu()
@@ -172,7 +265,6 @@ class Frame(wx.Frame):
         self.view_menu.Bind(wx.EVT_MENU, self._toggleDarkMode, self.dark_mode)
         self.use_dm = self.dark_mode.IsChecked()
 
-        self.menubar.Append(self.view_menu, 'View ')  # Added space to avoid autogenerated menu items on Mac
 
         # Options Menubar
         self.opt_menu = wx.Menu()
@@ -244,7 +336,45 @@ class Frame(wx.Frame):
         # self.file_about = self.file_menu.Append(wx.ID_ANY, '&About\tCTRL+A')
         # self.file_menu.Bind(wx.EVT_MENU, self._openAboutDialog, self.file_about)
 
-        self.menubar.Append(self.opt_menu, 'Options')
+        # Assemble the popup menu
+        self.main_menu.AppendSubMenu(self.file_menu, "PySpy")
+        self.main_menu.AppendSubMenu(self.view_menu, "View")
+        self.main_menu.AppendSubMenu(self.opt_menu, "Options")
+
+        # Keyboard shortcuts (previously provided by the menu bar)
+        self.SetAcceleratorTable(wx.AcceleratorTable([
+            wx.AcceleratorEntry(wx.ACCEL_CTRL, ord("A"), self.file_about.GetId()),
+            wx.AcceleratorEntry(wx.ACCEL_CTRL, ord("D"), self.dark_mode.GetId()),
+            wx.AcceleratorEntry(wx.ACCEL_CTRL, ord("T"), self.stay_ontop.GetId()),
+            wx.AcceleratorEntry(wx.ACCEL_CTRL, ord("R"), self.review_ignore.GetId()),
+            wx.AcceleratorEntry(wx.ACCEL_CTRL, ord("H"), self.review_highlight.GetId()),
+            ]))
+        self.Bind(wx.EVT_MENU, self._openAboutDialog, id=self.file_about.GetId())
+        self.Bind(wx.EVT_MENU, self._accelDarkMode, id=self.dark_mode.GetId())
+        self.Bind(wx.EVT_MENU, self._accelStayOnTop, id=self.stay_ontop.GetId())
+        self.Bind(wx.EVT_MENU, self._openIgnoreDialog, id=self.review_ignore.GetId())
+        self.Bind(wx.EVT_MENU, self._openHightlightDialog, id=self.review_highlight.GetId())
+
+        # Custom header (replaces the native menu bar)
+        self.header = wx.Panel(self, wx.ID_ANY)
+        self.menu_btn = wx.Button(
+            self.header, wx.ID_ANY, "☰", style=wx.BORDER_NONE
+            )
+        self.menu_btn.SetMinSize((38, 30))
+        self.menu_btn.Bind(wx.EVT_BUTTON, self._showMainMenu)
+        self.app_label = wx.StaticText(self.header, wx.ID_ANY, "PYSPY")
+        self.location_label = wx.StaticText(self.header, wx.ID_ANY, "")
+        header_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        header_sizer.Add(self.menu_btn, 0, wx.ALIGN_CENTER_VERTICAL, 0)
+        header_sizer.AddSpacer(6)
+        header_sizer.Add(self.app_label, 0, wx.ALIGN_CENTER_VERTICAL, 0)
+        header_sizer.AddSpacer(14)
+        header_sizer.Add(self.location_label, 0, wx.ALIGN_CENTER_VERTICAL, 0)
+        header_sizer.AddStretchSpacer()
+        self.header.SetSizer(header_sizer)
+
+        # Portrait bitmaps per grid row, filled by updateList()
+        self.row_char_ids = []
 
         # Set the grid object
         self.grid = wx.grid.Grid(self, wx.ID_ANY)
@@ -344,6 +474,13 @@ class Frame(wx.Frame):
         self.grid.SetSelectionForeground(self.txt_colour)
         self.status_label.SetForegroundColour(self.lbl_colour)
         self.summary_label.SetForegroundColour(self.acc_colour)
+        self.header.SetBackgroundColour(self.bg2_colour)
+        self.menu_btn.SetBackgroundColour(self.bg2_colour)
+        self.menu_btn.SetForegroundColour(self.txt_colour)
+        self.app_label.SetForegroundColour(self.lbl_colour)
+        self.location_label.SetForegroundColour(self.acc_colour)
+        self._applyTitleBarTheme()
+        self.header.Refresh()
 
         # Do not reset window size etc. if only changing colour scheme.
         if dark_toggle:
@@ -351,7 +488,6 @@ class Frame(wx.Frame):
 
         self.SetTitle(config.GUI_TITLE)
         self.SetSize((900, 420))
-        self.SetMenuBar(self.menubar)
         # Insert columns based on parameters provided in col_def
 
         # self.grid.CreateGrid(0, 0)
@@ -361,10 +497,25 @@ class Frame(wx.Frame):
         self.grid.SetDefaultCellFont(self.Font)
         self.grid.SetLabelFont(self.Font.Bold())
         self.summary_label.SetFont(self.Font.Bold())
+        self.app_label.SetFont(self.Font.Bold())
+        self.location_label.SetFont(self.Font.Bold())
+        self.menu_btn.SetFont(self.Font.Scaled(1.2))
         self.grid.SetDefaultRowSize(
-            int(self.grid.GetDefaultRowSize() * 1.35), True
+            int(self.grid.GetDefaultRowSize() * 1.45), True
             )
-        self.grid.SetColLabelSize(self.grid.GetDefaultRowSize() + 6)
+        self.grid.SetColLabelSize(self.grid.GetDefaultRowSize() + 4)
+        # Rows are separated by zebra striping, not grid lines
+        self.grid.EnableGridLines(False)
+        # Portraits scale with the row height
+        self.portrait_px = self.grid.GetDefaultRowSize() - 6
+        portraits.set_display_size(self.portrait_px)
+        # Custom renderers: portraits next to names, warning chips
+        char_attr = wx.grid.GridCellAttr()
+        char_attr.SetRenderer(CharacterCellRenderer(self))
+        self.grid.SetColAttr(3, char_attr)
+        warn_attr = wx.grid.GridCellAttr()
+        warn_attr.SetRenderer(WarningChipRenderer(self))
+        self.grid.SetColAttr(1, warn_attr)
         self.grid.SetRowLabelSize(0)
         self.grid.EnableEditing(0)
         self.grid.DisableCellEditControl()
@@ -398,6 +549,7 @@ class Frame(wx.Frame):
         '''
         sizer_main = wx.BoxSizer(wx.VERTICAL)
         sizer_bottom = wx.BoxSizer(wx.HORIZONTAL)
+        sizer_main.Add(self.header, 0, wx.EXPAND, 0)
         sizer_main.Add(self.summary_label, 0, wx.ALL | wx.EXPAND, 3)
         sizer_main.Add(self.grid, 1, wx.EXPAND, 0)
         sizer_bottom.Add(self.status_label, 1, wx.ALIGN_CENTER_VERTICAL, 0)
@@ -521,6 +673,13 @@ class Frame(wx.Frame):
         if event is not None:
             event.Skip(True)
 
+    def _refreshGrid(self):
+        '''Redraws the grid, e.g. after portraits finished loading.'''
+        try:
+            self.grid.ForceRefresh()
+        except RuntimeError:
+            pass  # Grid already destroyed during shutdown
+
     def _dangerColour(self, danger):
         '''
         Heat colour for the zKillboard danger rating: red for
@@ -587,6 +746,9 @@ class Frame(wx.Frame):
         rollup_affil = {}
         rollup_cyno = 0
         rollup_blops = 0
+        # Character ids per grid row, for the portrait renderer
+        self.row_char_ids = [r[0] for r in outlist]
+        portraits.prefetch(self.row_char_ids, done_callback=self._refreshGrid)
         for r in outlist:
 
             ignore = False
@@ -831,12 +993,47 @@ class Frame(wx.Frame):
     def updateLocation(self, system_name):
         '''
         Shows the player's current solar system (tracked from the EVE
-        Local chat log by chatwatch.py) in the window title.
+        Local chat log by chatwatch.py) in the window title and header.
         '''
         try:
             self.SetTitle(config.GUI_TITLE + "  |  " + str(system_name))
+            self.location_label.SetLabel("▸ " + str(system_name))
+            self.header.Layout()
         except RuntimeError:
             pass  # Frame already destroyed during shutdown
+
+    def _showMainMenu(self, event=None):
+        '''Pops up the application menu below the header menu button.'''
+        pos = self.menu_btn.GetPosition()
+        self.header.PopupMenu(
+            self.main_menu,
+            wx.Point(pos.x, pos.y + self.menu_btn.GetSize().height)
+            )
+
+    def _applyTitleBarTheme(self):
+        '''Matches the native window title bar to the colour scheme
+        (Windows 10/11 immersive dark mode).'''
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            value = ctypes.c_int(1 if self.options.Get("DarkMode", True) else 0)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                int(self.GetHandle()), 20, ctypes.byref(value),
+                ctypes.sizeof(value)
+                )
+        except Exception:
+            pass
+
+    def _accelDarkMode(self, event=None):
+        '''Ctrl+D accelerator: toggle the check item, then apply.'''
+        self.dark_mode.Check(not self.dark_mode.IsChecked())
+        self._toggleDarkMode()
+
+    def _accelStayOnTop(self, event=None):
+        '''Ctrl+T accelerator: toggle the check item, then apply.'''
+        self.stay_ontop.Check(not self.stay_ontop.IsChecked())
+        self._toggleStayOnTop()
 
     def _toggleChatWatch(self, event=None):
         checked = self.chat_watch.IsChecked()
