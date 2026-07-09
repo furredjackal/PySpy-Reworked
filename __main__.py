@@ -16,6 +16,14 @@ import re
 import threading
 import time
 
+# Crisp rendering on high-DPI displays (must run before wx starts)
+if os.name == "nt":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+
 import wx
 import pyperclip
 

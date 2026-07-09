@@ -116,23 +116,29 @@ CACHE_TIME = 43200  # Seconds for which zkill requests are cached
 # Colour Scheme
 
 DARK_MODE = {
-    "BG": wx.Colour(0, 0, 0),
-    "TXT": wx.Colour(247, 160, 55),  # Yellow
-    "LNE": wx.Colour(15, 15, 15),
-    "LBL": wx.Colour(160, 160, 160),
-    "HL1": wx.Colour(237, 72, 59),  # Red
-    "HL2": wx.Colour(62, 157, 250),  # Blue
-    "HL3": wx.Colour(237, 47, 218)  # Pink
+    "BG": wx.Colour(22, 24, 29),  # Window / grid background
+    "BG2": wx.Colour(29, 32, 39),  # Zebra stripe / header strip
+    "TXT": wx.Colour(214, 220, 229),  # Primary text (neutral)
+    "LNE": wx.Colour(38, 42, 51),  # Grid lines
+    "LBL": wx.Colour(138, 147, 165),  # Muted labels / inactive values
+    "HL1": wx.Colour(255, 99, 112),  # Red highlight (BLOPS / HIC)
+    "HL2": wx.Colour(79, 195, 247),  # Blue highlight (cyno)
+    "HL3": wx.Colour(229, 123, 216),  # Pink highlight (watchlist)
+    "ACC": wx.Colour(247, 160, 55),  # Amber accent (summary, warnings)
+    "SEL": wx.Colour(45, 62, 80)  # Row selection background
     }
 
 NORMAL_MODE = {
-    "BG": wx.Colour(-1, -1, -1),
-    "TXT": wx.Colour(45, 45, 45),
-    "LNE": wx.Colour(240, 240, 240),
-    "LBL": wx.Colour(32, 32, 32),
-    "HL1": wx.Colour(187, 55, 46),
-    "HL2": wx.Colour(38, 104, 166),
-    "HL3": wx.Colour(237, 47, 218)
+    "BG": wx.Colour(255, 255, 255),
+    "BG2": wx.Colour(245, 246, 248),
+    "TXT": wx.Colour(36, 41, 51),
+    "LNE": wx.Colour(228, 231, 236),
+    "LBL": wx.Colour(110, 119, 134),
+    "HL1": wx.Colour(200, 48, 58),
+    "HL2": wx.Colour(30, 118, 210),
+    "HL3": wx.Colour(206, 64, 189),
+    "ACC": wx.Colour(184, 108, 16),
+    "SEL": wx.Colour(205, 226, 246)
     }
 
 # Note, Amarr and Caldari are allied and have IDs ending on uneven integers.

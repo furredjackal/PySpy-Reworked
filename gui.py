@@ -42,6 +42,9 @@ class Frame(wx.Frame):
         wx.Frame.__init__(self, *args, **kwds)
         self.SetName("Main Window")
 
+        # Modern system font (Segoe UI on Windows) instead of the default
+        if os.name == "nt":
+            self.Font = wx.Font(wx.FontInfo(10).FaceName("Segoe UI"))
         self.Font = self.Font.Scaled(self.options.Get("FontScale", 1))
 
         # Set stay on-top unless user deactivated it
@@ -165,7 +168,7 @@ class Frame(wx.Frame):
         self.dark_mode = self.view_menu.AppendCheckItem(
             wx.ID_ANY, '&Dark Mode\tCTRL+D'
             )
-        self.dark_mode.Check(self.options.Get("DarkMode", False))
+        self.dark_mode.Check(self.options.Get("DarkMode", True))
         self.view_menu.Bind(wx.EVT_MENU, self._toggleDarkMode, self.dark_mode)
         self.use_dm = self.dark_mode.IsChecked()
 
@@ -314,22 +317,20 @@ class Frame(wx.Frame):
         self.normal_dict = config.NORMAL_MODE
 
         # Colour Scheme
-        if not self.options.Get("DarkMode", False):
-            self.bg_colour = self.normal_dict["BG"]
-            self.txt_colour = self.normal_dict["TXT"]
-            self.lne_colour = self.normal_dict["LNE"]
-            self.lbl_colour = self.normal_dict["LBL"]
-            self.hl1_colour = self.normal_dict["HL1"]
-            self.hl2_colour = self.normal_dict["HL2"]
-            self.hl3_colour = self.normal_dict["HL3"]
-        else:
-            self.bg_colour = self.dark_dict["BG"]
-            self.txt_colour = self.dark_dict["TXT"]
-            self.lne_colour = self.dark_dict["LNE"]
-            self.lbl_colour = self.dark_dict["LBL"]
-            self.hl1_colour = self.dark_dict["HL1"]
-            self.hl2_colour = self.dark_dict["HL2"]
-            self.hl3_colour = self.dark_dict["HL3"]
+        scheme = (
+            self.dark_dict if self.options.Get("DarkMode", True)
+            else self.normal_dict
+            )
+        self.bg_colour = scheme["BG"]
+        self.bg2_colour = scheme["BG2"]
+        self.txt_colour = scheme["TXT"]
+        self.lne_colour = scheme["LNE"]
+        self.lbl_colour = scheme["LBL"]
+        self.hl1_colour = scheme["HL1"]
+        self.hl2_colour = scheme["HL2"]
+        self.hl3_colour = scheme["HL3"]
+        self.acc_colour = scheme["ACC"]
+        self.sel_colour = scheme["SEL"]
 
         # Set default colors
         self.SetBackgroundColour(self.bg_colour)
@@ -337,24 +338,33 @@ class Frame(wx.Frame):
         self.grid.SetDefaultCellBackgroundColour(self.bg_colour)
         self.grid.SetDefaultCellTextColour(self.txt_colour)
         self.grid.SetGridLineColour(self.lne_colour)
-        self.grid.SetLabelBackgroundColour(self.bg_colour)
+        self.grid.SetLabelBackgroundColour(self.bg2_colour)
         self.grid.SetLabelTextColour(self.lbl_colour)
+        self.grid.SetSelectionBackground(self.sel_colour)
+        self.grid.SetSelectionForeground(self.txt_colour)
         self.status_label.SetForegroundColour(self.lbl_colour)
-        self.summary_label.SetForegroundColour(self.lbl_colour)
+        self.summary_label.SetForegroundColour(self.acc_colour)
 
         # Do not reset window size etc. if only changing colour scheme.
         if dark_toggle:
             return
 
         self.SetTitle(config.GUI_TITLE)
-        self.SetSize((720, 400))
+        self.SetSize((900, 420))
         self.SetMenuBar(self.menubar)
         # Insert columns based on parameters provided in col_def
 
         # self.grid.CreateGrid(0, 0)
         if self.grid.GetNumberCols() < len(self.columns):
             self.grid.AppendCols(len(self.columns))
-        self.grid.SetColLabelSize(self.grid.GetDefaultRowSize() + 2)
+        # Modern typography and spacing
+        self.grid.SetDefaultCellFont(self.Font)
+        self.grid.SetLabelFont(self.Font.Bold())
+        self.summary_label.SetFont(self.Font.Bold())
+        self.grid.SetDefaultRowSize(
+            int(self.grid.GetDefaultRowSize() * 1.35), True
+            )
+        self.grid.SetColLabelSize(self.grid.GetDefaultRowSize() + 6)
         self.grid.SetRowLabelSize(0)
         self.grid.EnableEditing(0)
         self.grid.DisableCellEditControl()
@@ -510,6 +520,19 @@ class Frame(wx.Frame):
         self.Layout()
         if event is not None:
             event.Skip(True)
+
+    def _dangerColour(self, danger):
+        '''
+        Heat colour for the zKillboard danger rating: red for
+        dangerous, amber for warm, muted for harmless.
+        '''
+        if danger >= 70:
+            return self.hl1_colour
+        if danger >= 40:
+            return self.acc_colour
+        if danger > 0:
+            return self.txt_colour
+        return self.lbl_colour
 
     def appendString(self, org, app):
         """
@@ -704,9 +727,11 @@ class Frame(wx.Frame):
                 out[1] = self.appendString(out[1], "CYNO")
 
             # Cell text formatting
+            stripe_colour = self.bg2_colour if rowidx % 2 else self.bg_colour
             for value in out:
                 color = False
                 self.grid.SetCellValue(rowidx, colidx, str(value))
+                self.grid.SetCellBackgroundColour(rowidx, colidx, stripe_colour)
                 self.grid.SetCellAlignment(
                     rowidx, colidx, self.columns[colidx][2], wx.ALIGN_CENTRE
                     )
@@ -727,7 +752,20 @@ class Frame(wx.Frame):
                         color = True
 
                 if not color:
-                    self.grid.SetCellTextColour(rowidx, colidx, self.txt_colour)
+                    if colidx == 24 and r[24] is not None:
+                        # Heat colouring for the danger rating
+                        self.grid.SetCellTextColour(
+                            rowidx, colidx, self._dangerColour(int(r[24]))
+                            )
+                    elif str(value) in ("-", "n.a."):
+                        # Mute placeholder values so real data stands out
+                        self.grid.SetCellTextColour(
+                            rowidx, colidx, self.lbl_colour
+                            )
+                    else:
+                        self.grid.SetCellTextColour(
+                            rowidx, colidx, self.txt_colour
+                            )
                 colidx += 1
             rowidx += 1
 
