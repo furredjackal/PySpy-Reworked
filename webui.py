@@ -14,37 +14,38 @@ PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <style>
+/* Warm "Claude" palette: paper tones, terracotta accent. */
 :root {
-  --bg: #121212;
-  --surface: #1e1e1e;
-  --surface2: #26262b;
-  --on-bg: #e4e6eb;
-  --on-muted: #9aa0ac;
-  --divider: rgba(255,255,255,0.08);
-  --hover: rgba(255,255,255,0.045);
-  --primary: #ffb74d;
-  --on-primary: #1a1205;
-  --secondary: #4fc3f7;
-  --red: #ff6e73;
-  --pink: #e57bd8;
-  --green: #81c784;
-  --shadow: 0 2px 4px -1px rgba(0,0,0,.4), 0 4px 5px 0 rgba(0,0,0,.28);
+  --bg: #1f1e1d;
+  --surface: #262624;
+  --surface2: #302f2c;
+  --on-bg: #f5f4ef;
+  --on-muted: #a3a199;
+  --divider: rgba(245,244,239,0.09);
+  --hover: rgba(245,244,239,0.05);
+  --primary: #d97757;
+  --on-primary: #ffffff;
+  --secondary: #83a9c4;
+  --red: #e0685f;
+  --pink: #c47ac0;
+  --green: #86ac74;
+  --shadow: 0 1px 2px rgba(0,0,0,.30), 0 4px 14px rgba(0,0,0,.22);
 }
 body.light {
-  --bg: #f5f5f7;
-  --surface: #ffffff;
-  --surface2: #ececf1;
-  --on-bg: #1e2430;
-  --on-muted: #61708a;
-  --divider: rgba(20,30,50,0.10);
-  --hover: rgba(20,30,50,0.045);
-  --primary: #b26a00;
+  --bg: #eeece2;
+  --surface: #faf9f5;
+  --surface2: #f0eee6;
+  --on-bg: #2b2a27;
+  --on-muted: #77756c;
+  --divider: rgba(60,55,45,0.13);
+  --hover: rgba(60,55,45,0.045);
+  --primary: #c15f3c;
   --on-primary: #ffffff;
-  --secondary: #0277bd;
-  --red: #c62828;
-  --pink: #ad1457;
-  --green: #2e7d32;
-  --shadow: 0 2px 4px -1px rgba(0,0,0,.15), 0 4px 5px 0 rgba(0,0,0,.10);
+  --secondary: #3a7ca5;
+  --red: #b8433a;
+  --pink: #a24a9e;
+  --green: #4f7a43;
+  --shadow: 0 1px 2px rgba(60,55,45,.10), 0 4px 14px rgba(60,55,45,.10);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
@@ -138,12 +139,11 @@ thead th {
   position: sticky; top: 0;
   background: var(--surface);
   color: var(--on-muted);
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: .4px;
-  text-transform: uppercase;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0;
   text-align: left;
-  padding: 12px 14px;
+  padding: 13px 14px;
   border-bottom: 1px solid var(--divider);
   cursor: pointer;
   z-index: 10;

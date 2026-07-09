@@ -303,9 +303,9 @@ class Frame(wx.Frame):
         '''Paint the frame (and WebView) background to match the page so
         no light border shows around the embedded browser.'''
         if self.options.Get("DarkMode", True):
-            bg = wx.Colour(18, 18, 18)  # --bg dark (matches webui.py)
+            bg = wx.Colour(31, 30, 29)  # --bg warm dark (matches webui.py)
         else:
-            bg = wx.Colour(245, 245, 247)  # --bg light
+            bg = wx.Colour(238, 236, 226)  # --bg warm paper
         self.SetBackgroundColour(bg)
         try:
             self.web.SetBackgroundColour(bg)
