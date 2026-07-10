@@ -97,6 +97,20 @@ body {
 #location .dot { font-size: 14px; }
 #pilotcount { margin-left: auto; color: var(--on-muted); font-size: 12.5px; }
 
+/* Window controls (the app bar is the title bar) */
+#wincontrols { display: flex; align-items: stretch; align-self: stretch; margin-right: -12px; }
+.wbtn {
+  width: 44px;
+  border: none;
+  background: transparent;
+  color: var(--on-muted);
+  font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: default;
+}
+.wbtn:hover { background: var(--hover); color: var(--on-bg); }
+.wbtn.close:hover { background: #d13438; color: #ffffff; }
+
 /* ---------------- Summary chips ---------------- */
 #summary {
   flex: 0 0 auto;
@@ -250,6 +264,11 @@ tr.hl3 td { color: var(--pink); }
   <div id="apptitle">PySpy <span>[Reworked]</span></div>
   <div id="location"><span class="dot">&#10148;</span><span id="locname"></span></div>
   <div id="pilotcount"></div>
+  <div id="wincontrols">
+    <button class="wbtn" id="btnmin" title="Minimise">&#x2500;</button>
+    <button class="wbtn" id="btnmax" title="Maximise">&#x25A1;</button>
+    <button class="wbtn close" id="btnclose" title="Close">&#x2715;</button>
+  </div>
 </div>
 <div id="summary"></div>
 <div id="card">
@@ -409,6 +428,25 @@ function render(payload) {
 /* ------------- interactions ------------- */
 document.getElementById("menubtn").addEventListener("click", function () {
   post({ action: "menu" });
+});
+/* The app bar doubles as the window title bar */
+document.getElementById("appbar").addEventListener("pointerdown", function (e) {
+  if (e.button !== 0) return;
+  if (e.target.closest("button")) return;
+  post({ action: "drag" });
+});
+document.getElementById("appbar").addEventListener("dblclick", function (e) {
+  if (e.target.closest("button")) return;
+  post({ action: "togglemax" });
+});
+document.getElementById("btnmin").addEventListener("click", function () {
+  post({ action: "min" });
+});
+document.getElementById("btnmax").addEventListener("click", function () {
+  post({ action: "togglemax" });
+});
+document.getElementById("btnclose").addEventListener("click", function () {
+  post({ action: "close" });
 });
 document.getElementById("headrow").addEventListener("click", function (e) {
   var th = e.target.closest("th");

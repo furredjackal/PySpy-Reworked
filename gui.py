@@ -59,7 +59,13 @@ class Frame(wx.Frame):
         # Persistent Options
         self.options = config.OPTIONS_OBJECT
 
-        kwds["style"] = kwds.get("style", 0) | wx.DEFAULT_FRAME_STYLE
+        style = kwds.get("style", 0) | wx.DEFAULT_FRAME_STYLE
+        if os.name == "nt":
+            # No native title bar: the HTML app bar acts as the title
+            # bar (drag, double-click maximize, window buttons), like
+            # modern chromeless apps. Resize borders are kept.
+            style &= ~wx.CAPTION
+        kwds["style"] = style
         wx.Frame.__init__(self, *args, **kwds)
         self.SetName("Main Window")
 
@@ -352,21 +358,57 @@ class Frame(wx.Frame):
         self._applyTitleBarTheme()
 
     def _applyTitleBarTheme(self):
-        '''Match the native window title bar to the colour scheme
-        (Windows 10/11 immersive dark mode).'''
+        '''The window is chromeless (the HTML app bar is the title
+        bar); this just matches the window border to the theme and
+        keeps native menus themed.'''
         if os.name != "nt":
             return
         dark = self.options.Get("DarkMode", True)
         try:
             import ctypes
-            value = ctypes.c_int(1 if dark else 0)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                int(self.GetHandle()), 20, ctypes.byref(value),
-                ctypes.sizeof(value)
-                )
+            hwnd = ctypes.c_void_p(int(self.GetHandle()))
+            dwm = ctypes.windll.dwmapi
+            # Explicit signature: without it ctypes truncates the
+            # 64-bit HWND to 32 bits and the calls silently fail.
+            dwm.DwmSetWindowAttribute.argtypes = [
+                ctypes.c_void_p, ctypes.c_uint,
+                ctypes.c_void_p, ctypes.c_uint
+                ]
+            dwm.DwmSetWindowAttribute.restype = ctypes.c_int
+
+            def set_attr(attr, value):
+                v = ctypes.c_uint(value)
+                dwm.DwmSetWindowAttribute(
+                    hwnd, attr, ctypes.byref(v), ctypes.sizeof(v)
+                    )
+
+            set_attr(20, 1 if dark else 0)  # Immersive dark mode
+            # Window border colour matching the page bg (Win 11)
+            border = 0x001D1E1F if dark else 0x00E2ECEE
+            set_attr(34, border)  # DWMWA_BORDER_COLOR
         except Exception:
             pass
         self._enableDarkMenus(dark)
+
+    def _startWindowDrag(self):
+        '''Hands the mouse drag over to the native window-move loop,
+        so dragging the HTML app bar moves the window (with snap).'''
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            user32.SendMessageW.argtypes = [
+                ctypes.c_void_p, ctypes.c_uint,
+                ctypes.c_size_t, ctypes.c_ssize_t
+                ]
+            user32.ReleaseCapture()
+            # WM_NCLBUTTONDOWN (0x00A1) with HTCAPTION (2)
+            user32.SendMessageW(
+                ctypes.c_void_p(int(self.GetHandle())), 0x00A1, 2, 0
+                )
+        except Exception:
+            pass
 
     def _enableDarkMenus(self, dark):
         '''Theme the native popup and context menus to match the app,
@@ -402,6 +444,14 @@ class Frame(wx.Frame):
             self._goToZKill(msg.get("idx"), msg.get("col", ""))
         elif action == "context":
             self._showContextMenu(msg.get("idx"))
+        elif action == "drag":
+            self._startWindowDrag()
+        elif action == "min":
+            self.Iconize(True)
+        elif action == "togglemax":
+            self.Maximize(not self.IsMaximized())
+        elif action == "close":
+            self.Close()
 
     # ==================================================================
     #  Menu helpers
