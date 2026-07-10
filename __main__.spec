@@ -1,25 +1,22 @@
-# -*- mode: python -*-
-'''Cross-platform (MacOSX and Windows 10) Spec file for pyinstaller.
-Be sure to not use python 3.7 until pyinstaller supports it.'''
+# -*- mode: python ; coding: utf-8 -*-
+'''PyInstaller spec for PySpy [Reworked]. Builds a single-file,
+windowed executable with the icon and version resources bundled.'''
 # cSpell Checker - Correct Words****************************************
-# // cSpell:words pyinstaller, pyspy, posix, icns, getcwd, datas,
-# // cSpell:words tkinter, noconsole
+# // cSpell:words pyinstaller, pyspy, posix, icns, datas, noconfirm
 # **********************************************************************
 import os
 
 if os.name == "nt":
     ICON_FILE = os.path.join("assets", "pyspy.ico")
-elif os.name == "posix":
+else:
     ICON_FILE = os.path.join("assets", "pyspy.png")
 
 MAC_ICON = os.path.join("assets", "pyspy.icns")
 ABOUT_ICON = os.path.join("assets", "pyspy_mid.png")
 
-block_cipher = None
-
 a = Analysis(
     ["__main__.py"],
-    pathex=[os.getcwd()],
+    pathex=[],
     binaries=[],
     datas=[
         (ICON_FILE, "."),
@@ -30,23 +27,15 @@ a = Analysis(
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],
-    excludes=["Tkinter"],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher
+    excludes=["tkinter"],
     )
 
-pyz = PYZ(
-    a.pure,
-    a.zipped_data,
-    cipher=block_cipher
-    )
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
-    a.zipfiles,
     a.datas,
     name="PySpy",
     icon=ICON_FILE,
@@ -55,14 +44,11 @@ exe = EXE(
     upx=True,
     runtime_tmpdir=None,
     console=False,
-    noconsole=True,
-    onefile=True,
-    windowed=True
     )
 
 app = BUNDLE(
     exe,
     name="PySpy.app",
     icon=MAC_ICON,
-    bundle_identifier=None
+    bundle_identifier=None,
     )
